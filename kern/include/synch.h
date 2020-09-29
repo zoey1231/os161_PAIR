@@ -34,7 +34,6 @@
  * Header file for synchronization primitives.
  */
 
-
 #include <spinlock.h>
 
 /*
@@ -43,10 +42,11 @@
  * The name field is for easier debugging. A copy of the name is made
  * internally.
  */
-struct semaphore {
+struct semaphore
+{
         char *sem_name;
-	struct wchan *sem_wchan;
-	struct spinlock sem_lock;
+        struct wchan *sem_wchan;
+        struct spinlock sem_lock;
         volatile unsigned sem_count;
 };
 
@@ -62,7 +62,6 @@ void sem_destroy(struct semaphore *);
 void P(struct semaphore *);
 void V(struct semaphore *);
 
-
 /*
  * Simple lock for mutual exclusion.
  *
@@ -72,10 +71,13 @@ void V(struct semaphore *);
  * The name field is for easier debugging. A copy of the name is
  * (should be) made internally.
  */
-struct lock {
+struct lock
+{
         char *lk_name;
-        // add what you need here
-        // (don't forget to mark things volatile as needed)
+
+        struct wchan *lk_wchan;
+        struct spinlock lk_spinlk;
+        volatile struct thread *lk_holder;
 };
 
 struct lock *lock_create(const char *name);
@@ -96,7 +98,6 @@ void lock_acquire(struct lock *);
 void lock_release(struct lock *);
 bool lock_do_i_hold(struct lock *);
 
-
 /*
  * Condition variable.
  *
@@ -111,10 +112,11 @@ bool lock_do_i_hold(struct lock *);
  * (should be) made internally.
  */
 
-struct cv {
+struct cv
+{
         char *cv_name;
-        // add what you need here
-        // (don't forget to mark things volatile as needed)
+        struct spinlock cv_spinlk;
+        struct wchan *cv_wchan;
 };
 
 struct cv *cv_create(const char *name);
@@ -136,6 +138,5 @@ void cv_destroy(struct cv *);
 void cv_wait(struct cv *cv, struct lock *lock);
 void cv_signal(struct cv *cv, struct lock *lock);
 void cv_broadcast(struct cv *cv, struct lock *lock);
-
 
 #endif /* _SYNCH_H_ */

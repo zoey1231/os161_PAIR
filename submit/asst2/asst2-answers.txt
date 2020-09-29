@@ -1,0 +1,38 @@
+1.What happens to a thread when it exits (i.e., calls thread_exit())? What about when it sleeps?
+
+When a thread exits,thread_exit() detaches the thread from the process,checks the stack guard band, disables all interrupts on this processor, then marks the thread's state to S_ZOMBIE(exited but not yet deleted).
+When a trhead go to sleep, it makes sure the thread is not in an interrupt handler,lets it enter the S_SLEEP state, adds the thread to a wait channel, passes control to the next thread.
+
+2.What function(s) handle(s) a context switch?
+thread_switch() in src/kern/thread/thread.c along with switchframe_switch() handle a context switch.
+thread_switch() handles the high-level, machine-independent level switch, while switchframe_switch() handles the assembler-level switch.
+
+3.What does it mean for a thread to be in each of the possible thread states?
+A thread can have 4 states: S_RUN means the thread is currently running, S_READY means the thread is runnable but currently not running ,S_SLEEP means the thread is sleeping and yield control to other threads ,S_ZOMBIE means the thread has exited but its structure is not fully deleted yet.
+
+4.What does it mean to turn interrupts off? How is this accomplished? Why is it important to turn off interrupts in the thread subsystem code?
+When interrupts have been turned off, even if there're interrupt signals, the handler will not response until interrupts have been turned up again.
+Turnning off interrupts is done by function splhigh() defined in src/kern/include/spl.h to set IPL interrupt priority level to the highest level to diable all interrupts.
+In the thread subsystem code, we want to ensure operations complete sussessfully without being interrupted in the middle. Some examples of such operations are thread exit and context switch.
+
+5.What happens when a thread wakes up another thread? How does a sleeping thread get to run again?
+A thread can wake up a thread by remove it from a wait channel, and then call thread_make_runnable() and put it on the run queue. 
+A thread can get to run again by being scheduled to run by schedule() and then selected by thread_switch() from runqueue.
+
+6.What function(s) choose(s) the next thread to run?
+schedule() in src/kern/thread/thread.c chooses the next thread to run.
+
+7.How does it (do they) pick the next thread?
+schedule() pick the next thread based on detail implementation. If we do nothing, threads will be picked and runned in round-robin fashion.
+
+8.What role does the hardware timer play in scheduling? What hardware independent function is called on a timer interrupt?
+The hardware timer calls schedule() every SCHEDULE_HARDCLOCKS hardclocks and calls thread_consider_migration() every MIGRATE_HARDCLOCKS hardclocks.
+hardclock() in src/kern/thread/clock.c is called on a timer interrupt.
+
+9.Describe how wchan_sleep() and wchan_wakeone() are used to implement semaphores.
+wchan_sleep() is used to implement function P() of semaphores while wchan_wakeone() is used to implement function V() of semaphores.
+wchan_sleep() is used to block the current thread until the semaphore's count > 0. 
+wchan_wakeone() is used to wake up the thread once the semaphore's count is 1 again.
+
+10.How does the implementation of wchan ensure that a thread never misses a wakeup signal: that another thread cannot attempt to awaken the first thread just as it is preparing to sleep, but before it is actually placed into the sleep queue?
+Before calling thread_switch() from wchan_sleep(), wchan_sleep() will ensure that the thread hold a spinlock and keep it locked until the thread is actually on the sleep queue, then it will be released by thread_switch().

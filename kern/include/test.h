@@ -35,6 +35,8 @@
  * functions.
  */
 
+/* This is only actually available if OPT_SYNCHPROBS is set. */
+int airballoon(int, char **);
 
 /*
  * Test code.
@@ -78,6 +80,5 @@ void menu(char *argstr);
 
 /* The main function, called from start.S. */
 void kmain(char *bootstring);
-
 
 #endif /* _TEST_H_ */

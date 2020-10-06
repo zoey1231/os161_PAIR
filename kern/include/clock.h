@@ -36,6 +36,7 @@
 
 #include <kern/time.h>
 
+#include "opt-synchprobs.h"
 
 /*
  * hardclock() is called on every CPU HZ times a second, possibly only
@@ -43,7 +44,13 @@
  */
 
 /* hardclocks per second */
-#define HZ  100
+#if OPT_SYNCHPROBS
+/* Make synchronization more exciting :) */
+#define HZ 10000
+#else
+/* More realistic value */
+#define HZ 100
+#endif
 
 void hardclock_bootstrap(void);
 void hardclock(void);
@@ -67,17 +74,16 @@ void gettime(struct timespec *ret);
  */
 
 void timespec_add(const struct timespec *t1,
-		  const struct timespec *t2,
-		  struct timespec *ret);
+				  const struct timespec *t2,
+				  struct timespec *ret);
 void timespec_sub(const struct timespec *t1,
-		  const struct timespec *t2,
-		  struct timespec *ret);
+				  const struct timespec *t2,
+				  struct timespec *ret);
 
 /*
  * clocksleep() suspends execution for the requested number of seconds,
  * like userlevel sleep(3). (Don't confuse it with wchan_sleep.)
  */
 void clocksleep(int seconds);
-
 
 #endif /* _CLOCK_H_ */

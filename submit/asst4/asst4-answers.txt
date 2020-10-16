@@ -1,0 +1,72 @@
+1. What are the ELF magic numbers?
+    The four ELF magic numbers are 0x7f, 'E', 'L', 'F' defined in ~/os161/src/kern/include/elf.h
+    They are used to identify if a file is of type ELF-format executable.
+
+2. What is the difference between UIO_USERISPACE and UIO_USERSPACE? When should one 
+use UIO_SYSSPACE instead?
+    UIO_USERISPACE and UIO_USERSPACE are defined in ~/os161/src/kern/include/uio.h, struct uio_seg enumuration. As outlined there,
+    UIO_USERSPACE referes to user space data and UIO_USERISPACE refers to user space excutable file. Upon uiomove(), 
+    we do no operation if uio_seg is UIO_USERSPACE while we call copyin or copyout depending on what permission we 
+    have, read or write if uio_seg is UIO_USERISPACE. We want to use UIO_SYSSPACE when we want to copy contents from the kernel buffer to a kernel
+    address if the permission given is READ. In contrast, we write contents from a kernel address to the kernel buffer
+    if the permission given is WRITE. In other words, operations when uio_seg is UIO_SYSSPACE only happen within the 
+    kernel while there is no operation on UIO_USERSPACE and operations when UIO_USERISPACE happened between kernel
+    and user space. 
+
+3. Why can the struct uio that is used to read in a segment be allocated on the stack 
+in load_segment() (i.e., where does the memory read actually go)?
+    The struct uio can be allocated on the stack in load_segment() because the uio struct contains 
+    the addresses of datablocks in the field iov and the memory read operation is performed within the 
+    function and result is generated as a return information. The memory read operation actually goes 
+    from the virtual address given as a parameter up to the virtual address + memory size to the datablocks 
+    address uio_iov in struct uio.
+
+4. In runprogram(), why is it important to call vfs_close() before going to usermode?
+    We use vfs_open() to open the program when we first enter runprogram() and as well as increase the reference
+    counter. Therefore we need to decrease the reference counter, which is what vfs_close() do, before going 
+    to the usermode. By keeping track of reference counter of a file, we can safely allow multiple threads to access 
+    the same file.
+    
+5. What function forces the processor to switch into usermode? Is this function machine dependent?
+    The function asm_usermode(struct trapframe) defined in src/kern/arch/mips/locore/exception-mips.S
+    forces the processor to switch into usermode. This function is machine dependent as it resides in an 
+    assembly file.
+    
+6. In what file are copyin and copyout defined? memmove? Why can't copyin and copyout 
+be implemented as simply as memmove?
+    copyin and copyout are defined in ~/os161/src/kern/vm/copyinout.c. memmove is defined in ~/os161/src/common/libc/string/memmove.c
+    copyin and copyout cannot be simply implemented as memmove by calling memcpy() because we use copyin and copyout when we want to 
+    copy data from userspace to kernel or the other way around. User may pass in invalid or bad addresses which may cause the kernel
+    to crash.Therefore, copyin and copyout need to verify the user address by calling copycheck() and use setjmp and longjmp to perform
+    recovery when fatal kernel fault occurs in addtion to simple memcpy.
+
+
+7. What (briefly) is the purpose of userptr_t?
+
+8. What is the numerical value of the exception code for a MIPS system call?
+
+9. How many bytes is an instruction in MIPS? (Answer this by reading syscall() carefully,
+not by looking somewhere else.)
+
+10. Why do you "probably want to change" the implementation of kill_curthread()?
+
+11. What would be required to implement a system call that took more than 4 arguments?
+
+12. What is the purpose of the SYSCALL macro?
+
+13. What is the MIPS instruction that actually triggers a system call? (Answer this by 
+reading the source in this directory, not looking somewhere else.)
+
+14. After reading syscalls-mips.S and syscall.c, you should be prepared to answer the
+following question: OS/161 supports 64-bit values; lseek() takes and returns a 64-bit
+offset value. Thus, lseek() takes a 32-bit file handle (arg0), a 64-bit offset (arg1),
+a 32-bit whence (arg2), and needs to return a 64-bit offset value. In void syscall
+(struct trapframe *tf) where will you find each of the three arguments (in which 
+registers) and how will you return the 64-bit offset?
+
+15. As you were reading the code in runprogram.c and loadelf.c, you probably noticed
+how the kernel manipulates the files. Which kernel function is called to open a file? 
+Which macro is called to read the file? What about to write a file? Which data 
+structure is used in the kernel to represent an open file? 
+
+16. What is the purpose of VOP_INCREF and VOP_DECREF?

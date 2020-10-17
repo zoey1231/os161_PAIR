@@ -6,11 +6,11 @@
 use UIO_SYSSPACE instead?
     UIO_USERISPACE and UIO_USERSPACE are defined in ~/os161/src/kern/include/uio.h, struct uio_seg enumuration. As outlined there,
     UIO_USERSPACE referes to user space data and UIO_USERISPACE refers to user space excutable file. Upon uiomove(), 
-    we do no operation if uio_seg is UIO_USERSPACE while we call copyin or copyout depending on what permission we 
-    have, read or write if uio_seg is UIO_USERISPACE. We want to use UIO_SYSSPACE when we want to copy contents from the kernel buffer to a kernel
-    address if the permission given is READ. In contrast, we write contents from a kernel address to the kernel buffer
-    if the permission given is WRITE. In other words, operations when uio_seg is UIO_SYSSPACE only happen within the 
-    kernel while there is no operation on UIO_USERSPACE and operations when UIO_USERISPACE happened between kernel
+    on both cases of UIO_USERSPACE and UIO_USERISPACE, we call copyin or copyout to move data from the kernel buffer to user address 
+    or the other way around depending on what permission we have, read or write. 
+    For the case of UIO_SYSSPACE, we copy contents from the kernel buffer to a kernel address if the permission given is READ and 
+    write contents from a kernel address to the kernel buffer if the permission given is WRITE. 
+    In other words, operations when uio_seg is UIO_SYSSPACE only happen within the kernel while UIO_USERSPACE and UIO_USERISPACE happened between kernel
     and user space. 
 
 3. Why can the struct uio that is used to read in a segment be allocated on the stack 
@@ -42,20 +42,38 @@ be implemented as simply as memmove?
 
 
 7. What (briefly) is the purpose of userptr_t?
+    userptr_t is defined in ~/os161/src/kern/include/types.h as a pointer of size of 1 byte.
+    The purpose of userptr_t is to prevent it mixing with other data types.
 
 8. What is the numerical value of the exception code for a MIPS system call?
+    The numerical value of exception code for a MIPS system call is 8 defined in ~/os161/src/kern/arch/mips/include/trapeframe.h.
 
 9. How many bytes is an instruction in MIPS? (Answer this by reading syscall() carefully,
 not by looking somewhere else.)
+    An instruction in MIPS is 4bytes.Since when we exit from a system call and increment the program counter by 1 instruction in syscall()
+    we increase tf->tf_epc by 4 bytes.
 
 10. Why do you "probably want to change" the implementation of kill_curthread()?
-
+    The current implementation does not perform the actual actions that kill the thread but simply assign the corresponding signals
+    according to the type of exception. What's missing there is a call to corresponding signal handlers that reside in 
+    src/userland/lib/hostcompat/hostcompat.c 
+    
 11. What would be required to implement a system call that took more than 4 arguments?
+    Conventionally, the first 4 arguments passed in reside in registers a0-a3. And all the other arguments will be stored on stack from the 
+    user's perspective. This is similar to a regular function call. However, since system calls are handled in kernel space, 
+    copyin() is required to fetch the additional arguments from the user's stack, starting at sp+16 to skip over the slots for the
+    registerized values.
 
 12. What is the purpose of the SYSCALL macro?
-
+    SYSCALL macro resides in src/build/userland/lib/libc/syscalls.S
+    The purpose of them is to dispatch the corresponding system call according to system call number which fills $v0 with SYS_##sym
+    Using fork system call as an example, sym will be replaced by the actual name of sym. In this case, sym is replaced with fork. 
+    Therefore, SYS_##sym is replaced with SYSCALL(fork, SYS_fork) and this will be passed in as a parameter in syscall() to further 
+    handle the system call.
+    
 13. What is the MIPS instruction that actually triggers a system call? (Answer this by 
 reading the source in this directory, not looking somewhere else.)
+    syscall() is called by mips_trap() which is triggered by MIPS instruction jal mips_trap at line 260 in ~/os161/src/kern/arch/mips/locore/exception-mips1.S.
 
 14. After reading syscalls-mips.S and syscall.c, you should be prepared to answer the
 following question: OS/161 supports 64-bit values; lseek() takes and returns a 64-bit
@@ -63,10 +81,22 @@ offset value. Thus, lseek() takes a 32-bit file handle (arg0), a 64-bit offset (
 a 32-bit whence (arg2), and needs to return a 64-bit offset value. In void syscall
 (struct trapframe *tf) where will you find each of the three arguments (in which 
 registers) and how will you return the 64-bit offset?
+    We can find the three arguments in the following registers:
+    32-bit file handle (arg0) can be found in tf->tf_a0
+    64-bit offset (arg1) can be found in tf->tf_a2 and tf->tf_a3 since  64-bit arguments are passed in aligned pairs of registers
+    32-bit whence (arg2) can be found in the stack position tf->tf_sp+16 by calling copyin()
+    64-bit offset is returned in v0 and v1 registers like an ordinary function call. Additionally a3 register will be set to 0 to indicate success.
 
 15. As you were reading the code in runprogram.c and loadelf.c, you probably noticed
 how the kernel manipulates the files. Which kernel function is called to open a file? 
 Which macro is called to read the file? What about to write a file? Which data 
 structure is used in the kernel to represent an open file? 
+    vfs_open() in ~/os161/src/kern/vfs/vfspath.c is called to open a file.
+    VOP_READ(vn, uio) is called to read the file.
+    VOP_WRITE(vn, uio) is called to write the file.
+    struct vnode is used in the kernel to represent an open file.
+    VOP_READ, VOP_WRITE, and struct vnode are defined in ~/os161/src/kern/include/vnode.h
 
 16. What is the purpose of VOP_INCREF and VOP_DECREF?
+    VOP_INCREF and VOP_DECREF increment and decrement the reference count of a vnode vn_refcount respectively. They are defined in 
+    ~/os161/src/kern/include/vnode.h. Reference count is used to keep track of the number of references to a file.

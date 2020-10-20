@@ -59,7 +59,7 @@ int sys___time(userptr_t user_seconds, userptr_t user_nanoseconds);
 
 int sys_open(const userptr_t, int, unsigned int *);
 int sys_read(int, userptr_t, size_t, int *);
-int sys_write(int, userptr_t, size_t, int *);
+int sys_write(int, const_userptr_t, size_t, int *);
 int sys_lseek(int, off_t, userptr_t, int64_t *);
 int sys_close(int);
 int sys_dup2(int, int, int *);

@@ -1,7 +1,26 @@
 #include <filetable.h>
 #include <array.h>
 #include <kern/errno.h>
+struct fileDescriptorArray *fdArray_create()
+{
+    struct fileDescriptorArray *fdArray;
 
+    fdArray = kmalloc(sizeof(struct fileDescriptorArray));
+    if (fdArray == NULL)
+        return NULL;
+
+    fdArray->fda_lock = lock_create("fda_lock");
+    if (fdArray->fda_lock == NULL)
+    {
+        kfree(fdArray);
+        return NULL;
+    }
+    fdArray->fdArray = array_create();
+    array_init(fdArray->fdArray);
+    array_preallocate(fdArray->fdArray, OPEN_MAX);
+
+    return fdArray;
+}
 struct filetable *filetable_create()
 {
     struct filetable *ft;
@@ -34,36 +53,51 @@ void filetable_destory(struct filetable *ft)
 /**
  * Add a file entry into the filetable. 
  * Add to the frontmost avaliable entry position.
- * Return the corresponding file's file descriptor in fd_ret.
  * Return 0 as success and -1 as error 
  */
-int filetable_add(struct filetable *ft, struct file *f, unsigned *fd_ret)
+int filetable_add(struct filetable *ft, struct file *file)
 {
     int err = -1;
+    KASSERT(ft != NULL);
+    KASSERT(file != NULL);
 
-    err = array_add(ft->entrys, f, fd_ret);
+    struct file *f;
+    for (unsigned i = 0; i < array_num(ft->entrys); i++)
+    {
+        f = (struct file *)array_get(ft->entrys, i);
+        if (!f->valid)
+        {
+            array_set(ft->entrys, i, file);
+            return 0;
+        }
+    }
+    err = array_add(ft->entrys, file, NULL);
     if (err)
         return err;
     return 0;
 }
 /**
- * Return the file entry with fd in filetable in f 
- * 
+ * Return the filedescriptor entry with fd in filetable in f 
  */
-struct file *filetable_get(struct filetable *ft, unsigned fd)
+struct fd_entry *fd_get(struct array *arr, unsigned fd, int *index)
 {
-    struct file *f;
-    if (fd > array_num(ft->entrys))
-        return NULL;
-    f = (struct file *)array_get(ft->entrys, fd);
-    if (f == NULL || !f->valid)
-        return NULL;
-
-    return f;
+    struct fd_entry *fe;
+    for (unsigned i = 0; i < array_num(arr); ++i)
+    {
+        fe = (struct fd_entry *)array_get(arr, i);
+        if (fe->fd == fd && fe->file->valid)
+        {
+            if (index != NULL)
+                *index = i;
+            return fe;
+        }
+    }
+    return NULL;
 }
 void filetable_remove(struct filetable *ft, unsigned fd)
 {
     KASSERT(ft != NULL);
+    KASSERT(fd < OPEN_MAX);
     array_remove(ft->entrys, fd);
 }
 // #include <types.h>

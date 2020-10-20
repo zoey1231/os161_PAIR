@@ -350,12 +350,12 @@ proc_setas(struct addrspace *newas)
 int proc_filetable_init(struct proc *proc)
 {
 	struct file *f;
+	struct fd_entry *fe;
 	int ret;
-	unsigned int fd_ret;
 	char *cons = NULL;
 
 	struct vnode *stdin_vn, *stdout_vn, *stderr_vn;
-
+	proc->p_fdArray = fdArray_create();
 	proc->p_filetable = filetable_create();
 
 	cons = kstrdup("con:");
@@ -369,8 +369,12 @@ int proc_filetable_init(struct proc *proc)
 	f->status = O_RDONLY;
 	f->valid = 1;
 	f->vn = stdin_vn;
-	filetable_add(proc->p_filetable, f, &fd_ret);
-	KASSERT(fd_ret == 0);
+
+	fe = kmalloc(sizeof(struct fd_entry));
+	fe->fd = 0;
+	fe->file = f;
+	filetable_add(proc->p_filetable, f);
+	array_add(proc->p_fdArray->fdArray, fe, NULL);
 
 	cons = kstrdup("con:");
 	ret = vfs_open(cons, O_WRONLY, 0, &stdout_vn);
@@ -383,8 +387,12 @@ int proc_filetable_init(struct proc *proc)
 	f->status = O_WRONLY;
 	f->valid = 1;
 	f->vn = stdout_vn;
-	filetable_add(proc->p_filetable, f, &fd_ret);
-	KASSERT(fd_ret == 1);
+
+	fe = kmalloc(sizeof(struct fd_entry));
+	fe->fd = 1;
+	fe->file = f;
+	filetable_add(proc->p_filetable, f);
+	array_add(proc->p_fdArray->fdArray, fe, NULL);
 
 	cons = kstrdup("con:");
 	ret = vfs_open(cons, O_WRONLY, 0, &stderr_vn);
@@ -397,7 +405,12 @@ int proc_filetable_init(struct proc *proc)
 	f->status = O_WRONLY;
 	f->valid = 1;
 	f->vn = stderr_vn;
-	filetable_add(proc->p_filetable, f, &fd_ret);
-	KASSERT(fd_ret == 2);
+
+	fe = kmalloc(sizeof(struct fd_entry));
+	fe->fd = 2;
+	fe->file = f;
+	filetable_add(proc->p_filetable, f);
+	array_add(proc->p_fdArray->fdArray, fe, NULL);
+
 	return 0;
 }

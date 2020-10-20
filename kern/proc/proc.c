@@ -48,7 +48,12 @@
 #include <current.h>
 #include <addrspace.h>
 #include <vnode.h>
-
+#include <filetable.h>
+#include <array.h>
+#include <limits.h>
+#include <kern/fcntl.h>
+#include <vfs.h>
+#include <syscall.h>
 /*
  * The process for the kernel; this holds all the kernel-only threads.
  */
@@ -57,18 +62,19 @@ struct proc *kproc;
 /*
  * Create a proc structure.
  */
-static
-struct proc *
+static struct proc *
 proc_create(const char *name)
 {
 	struct proc *proc;
 
 	proc = kmalloc(sizeof(*proc));
-	if (proc == NULL) {
+	if (proc == NULL)
+	{
 		return NULL;
 	}
 	proc->p_name = kstrdup(name);
-	if (proc->p_name == NULL) {
+	if (proc->p_name == NULL)
+	{
 		kfree(proc);
 		return NULL;
 	}
@@ -91,8 +97,7 @@ proc_create(const char *name)
  * Note: nothing currently calls this. Your wait/exit code will
  * probably want to do so.
  */
-void
-proc_destroy(struct proc *proc)
+void proc_destroy(struct proc *proc)
 {
 	/*
 	 * You probably want to destroy and null out much of the
@@ -112,13 +117,15 @@ proc_destroy(struct proc *proc)
 	 */
 
 	/* VFS fields */
-	if (proc->p_cwd) {
+	if (proc->p_cwd)
+	{
 		VOP_DECREF(proc->p_cwd);
 		proc->p_cwd = NULL;
 	}
 
 	/* VM fields */
-	if (proc->p_addrspace) {
+	if (proc->p_addrspace)
+	{
 		/*
 		 * If p is the current process, remove it safely from
 		 * p_addrspace before destroying it. This makes sure
@@ -154,11 +161,13 @@ proc_destroy(struct proc *proc)
 		 */
 		struct addrspace *as;
 
-		if (proc == curproc) {
+		if (proc == curproc)
+		{
 			as = proc_setas(NULL);
 			as_deactivate();
 		}
-		else {
+		else
+		{
 			as = proc->p_addrspace;
 			proc->p_addrspace = NULL;
 		}
@@ -175,11 +184,11 @@ proc_destroy(struct proc *proc)
 /*
  * Create the process structure for the kernel.
  */
-void
-proc_bootstrap(void)
+void proc_bootstrap(void)
 {
 	kproc = proc_create("[kernel]");
-	if (kproc == NULL) {
+	if (kproc == NULL)
+	{
 		panic("proc_create for kproc failed\n");
 	}
 }
@@ -196,7 +205,8 @@ proc_create_runprogram(const char *name)
 	struct proc *newproc;
 
 	newproc = proc_create(name);
-	if (newproc == NULL) {
+	if (newproc == NULL)
+	{
 		return NULL;
 	}
 
@@ -212,12 +222,14 @@ proc_create_runprogram(const char *name)
 	 * the only reference to it.)
 	 */
 	spinlock_acquire(&curproc->p_lock);
-	if (curproc->p_cwd != NULL) {
+	if (curproc->p_cwd != NULL)
+	{
 		VOP_INCREF(curproc->p_cwd);
 		newproc->p_cwd = curproc->p_cwd;
 	}
 	spinlock_release(&curproc->p_lock);
 
+	proc_filetable_init(newproc);
 	return newproc;
 }
 
@@ -230,8 +242,7 @@ proc_create_runprogram(const char *name)
  * the timer interrupt context switch, and any other implicit uses
  * of "curproc".
  */
-int
-proc_addthread(struct proc *proc, struct thread *t)
+int proc_addthread(struct proc *proc, struct thread *t)
 {
 	int result;
 	int spl;
@@ -241,7 +252,8 @@ proc_addthread(struct proc *proc, struct thread *t)
 	spinlock_acquire(&proc->p_lock);
 	result = threadarray_add(&proc->p_threads, t, NULL);
 	spinlock_release(&proc->p_lock);
-	if (result) {
+	if (result)
+	{
 		return result;
 	}
 	spl = splhigh();
@@ -259,8 +271,7 @@ proc_addthread(struct proc *proc, struct thread *t)
  * the timer interrupt context switch, and any other implicit uses
  * of "curproc".
  */
-void
-proc_remthread(struct thread *t)
+void proc_remthread(struct thread *t)
 {
 	struct proc *proc;
 	unsigned i, num;
@@ -272,8 +283,10 @@ proc_remthread(struct thread *t)
 	spinlock_acquire(&proc->p_lock);
 	/* ugh: find the thread in the array */
 	num = threadarray_num(&proc->p_threads);
-	for (i=0; i<num; i++) {
-		if (threadarray_get(&proc->p_threads, i) == t) {
+	for (i = 0; i < num; i++)
+	{
+		if (threadarray_get(&proc->p_threads, i) == t)
+		{
 			threadarray_remove(&proc->p_threads, i);
 			spinlock_release(&proc->p_lock);
 			spl = splhigh();
@@ -301,7 +314,8 @@ proc_getas(void)
 	struct addrspace *as;
 	struct proc *proc = curproc;
 
-	if (proc == NULL) {
+	if (proc == NULL)
+	{
 		return NULL;
 	}
 
@@ -328,4 +342,62 @@ proc_setas(struct addrspace *newas)
 	proc->p_addrspace = newas;
 	spinlock_release(&proc->p_lock);
 	return oldas;
+}
+
+/**
+ * Initilize the filetable for a process. Assign the first 3 entries to stdin, stdout, and stderr respectively.
+*/
+int proc_filetable_init(struct proc *proc)
+{
+	struct file *f;
+	int ret;
+	unsigned int fd_ret;
+	char *cons = NULL;
+
+	struct vnode *stdin_vn, *stdout_vn, *stderr_vn;
+
+	proc->p_filetable = filetable_create();
+
+	cons = kstrdup("con:");
+	ret = vfs_open(cons, O_RDONLY, 0, &stdin_vn);
+	if (ret)
+		return ret;
+	f = kmalloc(sizeof(struct file));
+	f->file_lock = lock_create("file_lock");
+	f->offset = 0;
+	f->refcount = 1;
+	f->status = O_RDONLY;
+	f->valid = 1;
+	f->vn = stdin_vn;
+	filetable_add(proc->p_filetable, f, &fd_ret);
+	KASSERT(fd_ret == 0);
+
+	cons = kstrdup("con:");
+	ret = vfs_open(cons, O_WRONLY, 0, &stdout_vn);
+	if (ret)
+		return ret;
+	f = kmalloc(sizeof(struct file));
+	f->file_lock = lock_create("file_lock");
+	f->offset = 0;
+	f->refcount = 1;
+	f->status = O_WRONLY;
+	f->valid = 1;
+	f->vn = stdout_vn;
+	filetable_add(proc->p_filetable, f, &fd_ret);
+	KASSERT(fd_ret == 1);
+
+	cons = kstrdup("con:");
+	ret = vfs_open(cons, O_WRONLY, 0, &stderr_vn);
+	if (ret)
+		return ret;
+	f = kmalloc(sizeof(struct file));
+	f->file_lock = lock_create("file_lock");
+	f->offset = 0;
+	f->refcount = 1;
+	f->status = O_WRONLY;
+	f->valid = 1;
+	f->vn = stderr_vn;
+	filetable_add(proc->p_filetable, f, &fd_ret);
+	KASSERT(fd_ret == 2);
+	return 0;
 }

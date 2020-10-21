@@ -386,16 +386,85 @@ int sys_lseek(int fd, off_t pos, userptr_t whence, int64_t *retVal)
 
 int sys_dup2(int oldfd, int newfd, int *retVal)
 {
-    (void)oldfd;
-    (void)newfd;
-    (void)retVal;
+    if (newfd < 0 || oldfd < 0 || newfd >= OPEN_MAX || oldfd >= OPEN_MAX) return EBADF;
+ 
+    lock_acquire(curproc->p_fdArray->fda_lock);
+
+    struct fd_entry* fe = fd_get(curproc->p_fdArray->fdArray, oldfd, NULL);
+    
+    /* check if the file that oldfd points to exists and valid */
+    if (fe == NULL) {
+        lock_release(curproc->p_fdArray->fda_lock);
+        return EBADF;
+    } 
+    if (!fe->file->valid) {
+        lock_release(curproc->p_fdArray->fda_lock);
+        return EBADF;
+    }
+
+    // return the existing file if oldfd is the same as the newfd
+    if (oldfd == newfd) {
+        *retVal = newfd;
+        lock_release(curproc->p_fdArray->fda_lock);
+        return 0;
+    }
+
+    struct fd_entry* newfd_fe = fd_get(curproc->p_fdArray->fdArray, newfd, NULL);
+    /* check if file that newfd points to exists, kill it if it does */
+    if (newfd_fe != NULL) {
+        lock_release(curproc->p_fdArray->fda_lock);
+        sys_close(newfd);
+        lock_acquire(curproc->p_fdArray->fda_lock);
+    }
+
+    if (array_num(curproc->p_fdArray->fdArray) >= OPEN_MAX) {
+        lock_release(curproc->p_fdArray->fda_lock);
+        return EMFILE;
+    }
+
+    struct fd_entry* new_fe = kmalloc(sizeof(struct fd_entry));
+    if (new_fe == NULL) {
+        lock_release(curproc->p_fdArray->fda_lock);
+        return EMFILE;
+    }
+
+    new_fe->fd = newfd;
+    new_fe->file = fe->file;
+    lock_acquire(fe->file->file_lock);
+    fe->file->refcount++;
+    VOP_INCREF(fe->file->vn);
+    lock_release(fe->file->file_lock);
+    array_add(curproc->p_fdArray->fdArray, newfd_fe, NULL);
+    *retVal = newfd;
+    lock_release(curproc->p_fdArray->fda_lock);
     return 0;
 }
 int sys_chdir(const char *pathname, int *retVal)
 {
-    (void)pathname;
-    (void)retVal;
-    return 0;
+    if (!pathname) {
+        return EFAULT;
+    }
+    
+    char *path;
+    path = kmalloc(PATH_MAX);
+    size_t *path_len = kmalloc(sizeof(int));
+
+    // Copy the filename into kernel space's address path
+    int err = copyinstr((const_userptr_t)pathname, path, PATH_MAX, path_len);
+    if (err)
+    {
+        kfree(path);
+        kfree(path_len);
+        return err;
+    }
+
+    kfree(path_len);
+
+    err = vfs_chdir(path);
+    if (err) *retVal = -1;
+    else *retVal = 0;
+
+    return err;
 }
 int sys___getcwd(char *buf, size_t buflen, int *retVal)
 {

@@ -468,9 +468,26 @@ int sys_chdir(const char *pathname, int *retVal)
 }
 int sys___getcwd(char *buf, size_t buflen, int *retVal)
 {
-    (void)buf;
-    (void)buflen;
-    (void)retVal;
+    if (!buf) return EFAULT;
+    char *temp_buf = kmalloc(sizeof(char *));
+    int err;
+
+    struct uio cwd;
+    struct iovec iov;
+
+    uio_kinit(&iov, &cwd, temp_buf, buflen, 0, UIO_READ);
+
+    err = vfs_getcwd(&cwd);
+    if (err) {
+        return err;
+    } 
+
+    err = copyout((const void *)temp_buf, (userptr_t)buf, (size_t)(sizeof(char *)));
+    kfree(temp_buf);
+
+    if (err) return err;
+
+    *retVal = cwd.uio_offset;
     return 0;
 }
 // /*

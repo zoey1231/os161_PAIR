@@ -359,6 +359,7 @@ dir_test()
 int
 main()
 {
+	printf("test Starts\n");
 	test_openfile_limits();
 	printf("Passed Part 1 of fsyscalltest\n");
 
@@ -367,6 +368,8 @@ main()
 	
 	simultaneous_write_test();
 	printf("Passed Part 3 of fsyscalltest\n");
+
+	
 	
 	test_dup2();
 	printf("Passed Part 4 of fsyscalltest\n");

@@ -1,6 +1,11 @@
 #include <filetable.h>
 #include <array.h>
 #include <kern/errno.h>
+
+/**
+ * Create a filedescriptor array to keep track of opened 
+ * files and thier associated fd
+ */
 struct fileDescriptorArray *fdArray_create()
 {
     struct fileDescriptorArray *fdArray;
@@ -21,6 +26,10 @@ struct fileDescriptorArray *fdArray_create()
 
     return fdArray;
 }
+
+/**
+ * Create a filetable keep track of opened files 
+ */
 struct filetable *filetable_create()
 {
     struct filetable *ft;
@@ -41,7 +50,9 @@ struct filetable *filetable_create()
 
     return ft;
 }
-
+/**
+ * Destory a filetable
+ */
 void filetable_destory(struct filetable *ft)
 {
     KASSERT(ft != NULL);
@@ -65,19 +76,21 @@ int filetable_add(struct filetable *ft, struct file *file)
     for (unsigned i = 0; i < array_num(ft->entrys); i++)
     {
         f = (struct file *)array_get(ft->entrys, i);
+        // replace invalid file if possible
         if (!f->valid)
         {
             array_set(ft->entrys, i, file);
             return 0;
         }
     }
+    // append to the end of the array
     err = array_add(ft->entrys, file, NULL);
     if (err)
         return err;
     return 0;
 }
 /**
- * Return the filedescriptor entry with fd in filetable in f 
+ * Return the filedescriptor entry with fd in filetable 
  */
 struct fd_entry *fd_get(struct array *arr, unsigned fd, int *index)
 {
@@ -85,7 +98,6 @@ struct fd_entry *fd_get(struct array *arr, unsigned fd, int *index)
     for (unsigned i = 0; i < array_num(arr); ++i)
     {
         fe = (struct fd_entry *)array_get(arr, i);
-        // if (fe == 0x0) return NULL;
         if (fe->fd == fd && fe->file->valid)
         {
             if (index != NULL)
@@ -95,6 +107,9 @@ struct fd_entry *fd_get(struct array *arr, unsigned fd, int *index)
     }
     return NULL;
 }
+/**
+ * Remove a file from the filetable
+ */
 void filetable_remove(struct filetable *ft, unsigned fd)
 {
     KASSERT(ft != NULL);

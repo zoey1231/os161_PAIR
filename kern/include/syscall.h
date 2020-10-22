@@ -63,6 +63,6 @@ int sys_write(int, const_userptr_t, size_t, int *);
 int sys_lseek(int, off_t, userptr_t, int64_t *);
 int sys_close(int);
 int sys_dup2(int, int, int *);
-int sys_chdir(const char *, int *);
+int sys_chdir(const char *);
 int sys___getcwd(char *, size_t, int *);
 #endif /* _SYSCALL_H_ */

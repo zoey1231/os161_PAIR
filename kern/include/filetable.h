@@ -6,7 +6,10 @@
 #include <limits.h>
 #include <synch.h>
 #include <array.h>
-// entry of a file table
+
+/**
+ * structure to represent a file and related state in kernel
+ */
 struct file
 {
     struct vnode *vn;
@@ -18,7 +21,10 @@ struct file
     struct lock *file_lock;
 };
 
-/*filetable array*/
+/**
+ * structure to represent filetable
+ * Every entry is of type struct file
+ */
 struct filetable
 {
     struct array *entrys;
@@ -26,18 +32,25 @@ struct filetable
 };
 extern struct filetable filetable;
 
+/**
+ * structure to keep track of opened files and thier associated fd
+ */
 struct fd_entry
 {
     unsigned int fd;
     struct file *file;
 };
 
-/* array to keep track of fd of each file in the file table*/
+/**
+ * Array to keep track of opened file with associated fd
+ * Every entry is of type struct fd_entry
+ */
 struct fileDescriptorArray
 {
     struct array *fdArray;
     struct lock *fda_lock;
 };
+
 struct fileDescriptorArray *fdArray_create(void);
 struct filetable *filetable_create(void);
 void filetable_destory(struct filetable *ft);

@@ -1,0 +1,5 @@
+build/*
+userland/build/*
+defs.mk
+kern/compile/*
+configure

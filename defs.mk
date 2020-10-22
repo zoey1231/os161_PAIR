@@ -13,9 +13,8 @@
 # The things that can be set here are documented in mk/os161.config.mk.
 #
 
-OSTREE=/ubc/ece/home/ugrads/m/maxonzz/os161/os161_PAIR/root
+OSTREE=/Users/zoeyli/os161/root
 PLATFORM=sys161
 MACHINE=mips
-COMPAT_CFLAGS= -DNEED_NTOHLL
+COMPAT_CFLAGS=
 COMPAT_TARGETS=
-HOST_CFLAGS+= -DDECLARE_NTOHLL

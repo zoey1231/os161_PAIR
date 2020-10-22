@@ -85,6 +85,7 @@ struct fd_entry *fd_get(struct array *arr, unsigned fd, int *index)
     for (unsigned i = 0; i < array_num(arr); ++i)
     {
         fe = (struct fd_entry *)array_get(arr, i);
+        // if (fe == 0x0) return NULL;
         if (fe->fd == fd && fe->file->valid)
         {
             if (index != NULL)

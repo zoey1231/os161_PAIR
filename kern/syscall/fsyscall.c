@@ -393,7 +393,7 @@ int sys_dup2(int oldfd, int newfd, int *retVal)
     struct fd_entry* fe = fd_get(curproc->p_fdArray->fdArray, oldfd, NULL);
     
     /* check if the file that oldfd points to exists and valid */
-    if (fe == NULL) {
+    if (fe == NULL || fe->file == NULL) {
         lock_release(curproc->p_fdArray->fda_lock);
         return EBADF;
     } 
@@ -432,9 +432,9 @@ int sys_dup2(int oldfd, int newfd, int *retVal)
     new_fe->file = fe->file;
     lock_acquire(fe->file->file_lock);
     fe->file->refcount++;
-    VOP_INCREF(fe->file->vn);
+    // VOP_INCREF(fe->file->vn);
     lock_release(fe->file->file_lock);
-    array_add(curproc->p_fdArray->fdArray, newfd_fe, NULL);
+    array_add(curproc->p_fdArray->fdArray, new_fe, NULL);
     *retVal = newfd;
     lock_release(curproc->p_fdArray->fda_lock);
     return 0;
@@ -468,27 +468,45 @@ int sys_chdir(const char *pathname, int *retVal)
 }
 int sys___getcwd(char *buf, size_t buflen, int *retVal)
 {
-    if (!buf) return EFAULT;
-    char *temp_buf = kmalloc(sizeof(char *));
-    int err;
+    // if (buf == NULL) return EFAULT;
+    // char *temp_buf = kmalloc(sizeof(char *));
+    // int err;
 
-    struct uio cwd;
-    struct iovec iov;
+    // struct uio cwd;
+    // struct iovec iov;
 
-    uio_kinit(&iov, &cwd, temp_buf, buflen, 0, UIO_READ);
+    // uio_kinit(&iov, &cwd, temp_buf, buflen, 0, UIO_READ);
 
-    err = vfs_getcwd(&cwd);
-    if (err) {
-        return err;
-    } 
+    // err = vfs_getcwd(&cwd);
+    // if (err) {
+    //     return err;
+    // } 
 
-    err = copyout((const void *)temp_buf, (userptr_t)buf, (size_t)(sizeof(char *)));
-    kfree(temp_buf);
+    // err = copyout((const void *)temp_buf, (userptr_t)buf, (size_t)(sizeof(char *)));
+    // kfree(temp_buf);
 
-    if (err) return err;
+    // if (err) return err;
 
-    *retVal = cwd.uio_offset;
-    return 0;
+    // // *retVal = cwd.uio_offset;
+    //  *retVal = buflen - u.uio_resid;
+    // return 0;
+
+   struct iovec iovec;
+	struct uio uio;
+	
+	// File system operations calling uiomove for directory data
+	// initialize a uio suitable for I/O from a kernel buffer.
+	uio_kinit(&iovec, &uio,(void*) buf, buflen ,0, UIO_READ);
+	uio.uio_segflg = UIO_USERSPACE;
+	uio.uio_space = curproc->p_addrspace;
+	iovec.iov_ubase = (userptr_t)buf;
+
+	int err = vfs_getcwd(&uio);
+	if (err) return err;
+	
+	// 
+	*retVal = buflen - uio.uio_resid;
+	return 0;
 }
 // /*
 // Writes the data from buf up to buflen bytes to the file at fd, at the

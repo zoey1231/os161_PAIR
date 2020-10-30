@@ -65,4 +65,11 @@ int sys_close(int);
 int sys_dup2(int, int, int *);
 int sys_chdir(const char *);
 int sys___getcwd(char *, size_t, int *);
+
+int sys_fork(struct trapframe *tf, void enter_forked_process(struct trapframe *tf), int *retval);
+int sys_execv(const char *program, char **args);
+int sys_getpid(int *retval);
+void sys__exit(int exitcode);
+int sys_waitpid(pid_t pid, int *status, int options, int *retval);
+
 #endif /* _SYSCALL_H_ */

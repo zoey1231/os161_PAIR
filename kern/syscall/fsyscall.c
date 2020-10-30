@@ -55,7 +55,7 @@ int sys_open(const userptr_t filename, int flags, unsigned int *retVal)
         return EMFILE;
     }
 
-    // update fd to the number of files have opened. fd should be associated to 
+    // update fd to the number of files have opened. fd should be associated to
     // the new file after the loop
     while (fd_get(curproc->p_fdArray->fdArray, fd, NULL) != NULL)
     {
@@ -112,7 +112,6 @@ int sys_open(const userptr_t filename, int flags, unsigned int *retVal)
         return EMFILE;
     }
 
-    
     fe->fd = fd;
     fe->file = file;
     *retVal = fd;
@@ -173,14 +172,14 @@ int sys_close(int fd)
         lock_release(file->file_lock);
         lock_destroy(file->file_lock);
         fe->file = NULL;
-        // remove file entry from the kernel representation 
+        // remove file entry from the kernel representation
         array_remove(curproc->p_fdArray->fdArray, (unsigned)index);
         kfree(fe);
     }
     else
     {
         fe->file = NULL;
-        // remove file entry from the kernel representation 
+        // remove file entry from the kernel representation
         array_remove(curproc->p_fdArray->fdArray, (unsigned)index);
         kfree(fe);
         lock_release(file->file_lock);
@@ -347,7 +346,7 @@ int sys_lseek(int fd, off_t pos, userptr_t whence, int64_t *retVal)
     {
         return EINVAL;
     }
- 
+
     // whence has to be either SEEK_SET or SEEK_CUR or SEEK_END. return EINVAL if anything else
     if (!(k_whence == SEEK_SET || k_whence == SEEK_CUR || k_whence == SEEK_END))
     {
@@ -551,6 +550,57 @@ int sys___getcwd(char *buf, size_t buflen, int *retVal)
         return err;
 
     *retVal = buflen - uio.uio_resid; // either way should work
-    // *retVal = uio.uio_offset;  
+    // *retVal = uio.uio_offset;
     return 0;
 }
+
+/**
+ * Copys the currently running process.
+ * The two copies are identical except the child process has a new, unique process id.
+ * The two processes do not share memory or open file tables. However, the file handle objects the file 
+ * tables point to are shared.
+ * On success, fork returns twice, once in the parent process and once in the child process.
+ * In the child process, 0 is returned. In the parent process, the new child process's pid is returned.
+ * On error, no new process is created. fork only returns once with corresponding error code.
+ */
+int sys_fork(struct trapframe *tf, void enter_forked_process(struct trapframe *tf), int *retval);
+/**
+ * Replaces the currently executing program with a newly loaded program image.
+ * The pathname of the program to run is passed as program. The args argument is an array of 0-terminated strings.
+ * The array itself should be terminated by a NULL pointer.The argument strings should be copied into the new 
+ * process as the new process's argv[] array. In the new process, argv[argc] must be NULL. 
+ * By convention, argv[0] in new processes contains the name that was used to invoke the program. 
+ * This is not necessarily the same as program, and furthermore is only a convention and should not be enforced by the kernel. 
+ * The process file table and current working directory are not modified by execv.
+ * On success, execv does not return; instead, the new program begins executing.
+ * On failure, the corresponding error code is returned.
+ */
+int sys_execv(const char *program, char **args);
+/**
+ * Returns the process id of the current process.
+ * sys_getpid does not fail.
+ */
+int sys_getpid(int *retval);
+/**
+ * Cause the current process to exit. 
+ * The exit code exitcode is reported back to other process(es) via the waitpid() call.
+ * The process id of the exiting process should not be reused until all processes expected to collect 
+ * the exit code with waitpid have done so.
+ * sys__exit does not return.
+ */
+void sys__exit(int exitcode);
+/**
+ * Wait for the process specified by pid to exit, and return an encoded exit status in the integer pointed 
+ * to by status. If that process has exited already, waitpid returns immediately. 
+ * If that process does not exist, waitpid fails.
+ * It is explicitly allowed for status to be NULL, in which case waitpid operates normally but the status value
+ * is not produced.
+ * A process moves from "has exited already" to "does not exist" when every process that is expected to collect
+ * its exit status with waitpid has done so.
+ * If a parent process exits before one or more of its children, it can no longer be expected collect their exit status. 
+ * The options argument should be 0. You are not required to implement any options. (However, the system should 
+ * check to make sure that requests for options the system do not support are rejected.)
+ * On success, returns the process id whose exit status is reported in status. 
+ * On failure, the corresponding error code is returned.
+ */
+int sys_waitpid(pid_t pid, int *status, int options, int *retval);

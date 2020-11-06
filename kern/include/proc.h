@@ -39,6 +39,12 @@
 #include <spinlock.h>
 #include <thread.h> /* required for struct threadarray */
 #include <filetable.h>
+#include <limits.h>
+
+#define READY 0	  // index available for process
+#define RUNNING 1 // Process running
+#define ZOMBIE 2  // Process waiting to be killed
+#define ORPHAN 3  // Process running and parent exited
 
 struct addrspace;
 struct vnode;
@@ -55,13 +61,37 @@ struct proc
 	/* VM */
 	struct addrspace *p_addrspace; /* virtual address space */
 
+	/* PID */
+	pid_t pid; /* process id */
+	struct array *children;
 	/* VFS */
 	struct vnode *p_cwd; /* current working directory */
+	struct filetable *proc_ft;
 
 	/* add more material here as needed */
 	struct filetable *p_filetable;		   /*filetable array for this process*/
 	struct fileDescriptorArray *p_fdArray; /* array to keep track of fd of each file in the file table for this process*/
 };
+
+struct pidtable
+{
+	struct lock *pid_lock;
+	struct cv *pid_cv;					 /* To allow for processes to sleep on waitpid */
+	struct proc *pid_procs[PID_MAX + 1]; /* Array to hold processes */
+	int pid_status[PID_MAX + 1];		 /* Array to hold process statuses */
+	int pid_waitcode[PID_MAX + 1];		 /* Array to hold the wait codes*/
+	int pid_available;					 /* Number of available pid spaces */
+	int pid_next;						 /* Lowest free PID */
+};
+
+extern struct pidtable *pidtable;
+
+/* Initializes the pid table*/
+void pidtable_init(void);
+struct proc *get_process(pid_t);
+int pidtable_add(struct proc *, int32_t *);
+void pidtable_exit(struct proc *, int32_t);
+void pidtable_freepid(pid_t);
 
 /* This is the process structure for the kernel and for kernel-only threads. */
 extern struct proc *kproc;

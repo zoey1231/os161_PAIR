@@ -17,6 +17,8 @@
 #include <limits.h>
 #include <kern/seek.h>
 #include <kern/stattypes.h>
+#include <machine/trapframe.h>
+#include <addrspace.h>
 
 /*
  * opens the file, device, or other kernel object named by the pathname filename. 
@@ -554,6 +556,17 @@ int sys___getcwd(char *buf, size_t buflen, int *retVal)
     return 0;
 }
 
+void enter_usermode(void *data1, unsigned long data2)
+{
+    (void)data2;
+    void *tf = (void *)curthread->t_stack + 16;
+
+    memcpy(tf, (const void *)data1, sizeof(struct trapframe));
+    kfree((struct trapframe *)data1);
+
+    as_activate();
+    mips_usermode(tf);
+}
 /**
  * Copys the currently running process.
  * The two copies are identical except the child process has a new, unique process id.
@@ -563,7 +576,75 @@ int sys___getcwd(char *buf, size_t buflen, int *retVal)
  * In the child process, 0 is returned. In the parent process, the new child process's pid is returned.
  * On error, no new process is created. fork only returns once with corresponding error code.
  */
-int sys_fork(struct trapframe *tf, void enter_forked_process(struct trapframe *tf), int *retval);
+int sys_fork(struct trapframe *tf, int *retval)
+{
+
+    // declare a new process:
+    struct proc *new_proc;
+    new_proc = proc_create("new process");
+    if (new_proc == NULL)
+    {
+        return ENOMEM;
+    }
+
+    // add the new process to the pid table
+    int ret = pidtable_add(new_proc, &new_proc->pid);
+    if (ret)
+    {
+        proc_destroy(new_proc);
+        return ret;
+    }
+
+    // copy address space from the parent process
+    ret = as_copy(curproc->p_addrspace, &new_proc->p_addrspace, new_proc->pid);
+    if (ret)
+    { // if copy is not successful, free new process
+        pidtable_freepid(new_proc->pid);
+        proc_destroy(new_proc);
+        return ret;
+    }
+
+    spinlock_acquire(&curproc->p_lock);
+    if (curproc->p_cwd != NULL)
+    {
+        VOP_INCREF(curproc->p_cwd);
+        new_proc->p_cwd = curproc->p_cwd;
+    }
+    spinlock_release(&curproc->p_lock);
+
+    // copy filetable from the parent process
+    ret = ft_copy(curproc, new_proc);
+    if (ret)
+    {
+        pidtable_freepid(new_proc->pid);
+        proc_destroy(new_proc);
+        return ret;
+    }
+
+    // copy and tweak trapframe
+    struct trapframe *tf_dup = (struct trapframe *)kmalloc(sizeof(struct trapframe));
+    if (tf_dup == NULL)
+    {
+        return ENOMEM;
+    }
+    memcpy((void *)tf_dup, (const void *)tf, sizeof(struct trapframe));
+    tf_dup->tf_v0 = 0;
+    tf_dup->tf_v1 = 0;
+    tf_dup->tf_a3 = 0;
+    tf_dup->tf_epc += 4;
+
+    *retval = new_proc->pid;
+    ret = thread_fork("new_thread", new_proc, enter_usermode, tf_dup, 1);
+    if (ret)
+    {
+        proc_destroy(new_proc);
+        pidtable_freepid(new_proc->pid);
+        kfree(tf_dup);
+        return ret;
+    }
+    return 0;
+}
+
 /**
  * Replaces the currently executing program with a newly loaded program image.
  * The pathname of the program to run is passed as program. The args argument is an array of 0-terminated strings.
@@ -575,12 +656,113 @@ int sys_fork(struct trapframe *tf, void enter_forked_process(struct trapframe *t
  * On success, execv does not return; instead, the new program begins executing.
  * On failure, the corresponding error code is returned.
  */
-int sys_execv(const char *program, char **args);
+int sys_execv(const char *program, char **args)
+{
+    int ret;
+    char *progname;
+    if (program == NULL || args == NULL)
+        return EFAULT; // indicates that one of the argument is an invalid pointer
+
+    //copy the arguments from the old address space
+    ret = string_in(program, &progname, PATH_MAX);
+    if (ret)
+        return ret;
+
+    //get number of arguments
+    int argc;
+    ret = get_argc(args, &args);
+    if (ret)
+        kfree(progname);
+    return ret;
+
+    char **args_copy = kmalloc(argc * sizeof(char *));
+    int *size = kmalloc(argc * sizeof(int));
+    ret = copy_in_args(argc, args, args_copy, size);
+    if (ret)
+    {
+        kfree(args_copy);
+        kfree(size);
+        kfree(progname);
+        return ret;
+    }
+
+    //get a new address space
+    struct addrspace *as_old = proc_getas();
+    struct addrspace *as_new = as_create();
+    if (as_new == NULL)
+    {
+        kfree(progname);
+        free_copied_args(argc, size, args_copy);
+        return ENOMEM; // insufficient virtual memory is available
+    }
+
+    struct vnode *vn;
+    vaddr_t entrypoint, stackptr;
+    ret = vfs_open(progname, O_RDONLY, 0, &vn);
+    if (ret)
+    {
+        kfree(progname);
+        as_destroy(as_new);
+        free_copied_args(argc, size, args_copy);
+        return ENOMEM;
+    }
+
+    //switch to the new address space
+    as_destroy(as_old);
+    proc_setas(NULL);
+    as_deactivate();
+
+    proc_setas(as_new);
+    as_activate();
+    //load a new executable
+    ret = load_elf(vn, &entrypoint);
+    if (ret)
+    {
+        proc_setas(NULL);
+        as_deactivate();
+
+        proc_setas(as_old);
+        as_activate();
+
+        as_destroy(as_new);
+        vfs_close(vn);
+        kfree(progname);
+        free_copied_args(argc, size, args_copy);
+        return ret;
+    }
+
+    //define a new stack region
+    ret = as_define_stack(as_new, &stackptr);
+    if (ret)
+    {
+        proc_setas(NULL);
+        as_deactivate();
+
+        proc_setas(as_old);
+        as_activate();
+
+        as_destroy(as_new);
+        vfs_close(vn);
+        kfree(progname);
+        free_copied_args(argc, size, args_copy);
+        return ret;
+    }
+    //copy the arguments to the new address space, properly arranging them
+    //clean up the old address space
+    //wrap to user mode
+    return 0;
+}
 /**
  * Returns the process id of the current process.
  * sys_getpid does not fail.
  */
-int sys_getpid(int *retval);
+int sys_getpid(int *retval)
+{
+    lock_acquire(pidtable->pid_lock);
+    *retval = curproc->pid;
+    lock_release(pidtable->pid_lock);
+    return 0;
+}
 /**
  * Cause the current process to exit. 
  * The exit code exitcode is reported back to other process(es) via the waitpid() call.
@@ -604,3 +786,87 @@ void sys__exit(int exitcode);
  * On failure, the corresponding error code is returned.
  */
 int sys_waitpid(pid_t pid, int *status, int options, int *retval);
+
+static int
+string_in(const char *user_src, char **kern_dest, size_t copy_len, size_t *actural_len)
+{
+    int ret;
+
+    copy_len++;
+    *kern_dest = kmalloc(copy_len * sizeof(char));
+
+    ret = copyinstr((const_userptr_t)user_src, *kern_dest, copy_len, actural_len);
+    if (ret)
+    {
+        kfree(*kern_dest);
+        return ret;
+    }
+
+    return 0;
+}
+
+/**
+ * Return the number of arguments in argc
+ * Return error if there are more arguments than ARG_MAX
+ */
+static int get_argc(char **args, int *argc)
+{
+    int ret;
+    int i = 0;
+    char *next_arg;
+
+    //count the argument number one by one until we meet the null terminator, also check if there are too many arguments
+    do
+    {
+        i++; // i starts from 1
+        ret = copyin((const_userptr_t)&args[i], (void *)&next_arg, (size_t)sizeof(char *));
+        if (ret)
+        {
+            return ret;
+        }
+    } while (next_arg != NULL && (i + 1) * (sizeof(char *)) <= ARG_MAX);
+
+    if (next_arg != NULL)
+    {
+        return E2BIG;
+    }
+
+    *argc = i;
+    return 0;
+}
+
+/**
+*Copies the user strings into the kernel, populating size[] with their respective lengths.
+*Returns an error if an argument's length exceeds ARG_MAX.
+*/
+static int
+copy_in_args(int argc, char **args, char **args_copy, int *size_arr) //TODO
+{
+    int ret;
+    size_t str_len;
+
+    for (int i = 0; i < argc; i++)
+    {
+        ret = string_in((const char *)args[i], &args_copy[i], ARG_MAX, &str_len);
+        if (ret)
+        {
+            for (int j = 0; j < i; j++)
+            {
+                kfree(args_copy[j]);
+            }
+            return ret;
+        }
+        size_arr[i] = str_len;
+    }
+    return 0;
+}
+
+static void free_copied_args(int argc, int *size, char **args_copy)
+{
+    for (int i = 0; i < argc; i++)
+    {
+        kfree(args_copy[i]);
+    }
+    kfree(size);
+    kfree(args_copy);
+}

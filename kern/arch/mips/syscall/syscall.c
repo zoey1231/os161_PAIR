@@ -148,7 +148,7 @@ void syscall(struct trapframe *tf)
 		break;
 
 	case SYS_fork:
-		err = sys_fork(tf, enter_forked_process, (int *)&retval);
+		err = sys_fork(tf, (int *)&retval);
 		break;
 	case SYS_execv:
 		err = sys_execv((const char *)tf->tf_a0, (char **)tf->tf_a1);

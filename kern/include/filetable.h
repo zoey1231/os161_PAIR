@@ -57,4 +57,5 @@ void filetable_destory(struct filetable *ft);
 int filetable_add(struct filetable *ft, struct file *f);
 struct fd_entry *fd_get(struct array *arr, unsigned fd, int *index);
 void filetable_remove(struct filetable *ft, unsigned fd);
+int ft_copy(struct proc *proc_src, struct proc *proc_dst);
 #endif

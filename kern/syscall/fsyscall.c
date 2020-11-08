@@ -537,7 +537,7 @@ int sys___getcwd(char *buf, size_t buflen, int *retVal)
     uio_kinit(&iovec, &uio, temp_buf, buflen, 0, UIO_READ);
 
     err = vfs_getcwd(&uio);
-    if (err)
+    if (err)   
     {
         return err;
     }
@@ -563,7 +563,19 @@ int sys___getcwd(char *buf, size_t buflen, int *retVal)
  * In the child process, 0 is returned. In the parent process, the new child process's pid is returned.
  * On error, no new process is created. fork only returns once with corresponding error code.
  */
-int sys_fork(struct trapframe *tf, void enter_forked_process(struct trapframe *tf), int *retval);
+int sys_fork(struct trapframe *tf, void enter_forked_process(struct trapframe *tf), int *retval) {
+
+
+    // instantiate a new trap frame
+    struct trapframe* tf_dup = (struct trapframe*)kmalloc(sizeof(struct trapframe));
+    memcpy((void *) tf_dup, (const void *) tf, sizeof(struct trapframe));
+
+    // declare a new process:
+    struct proc *new_proc;
+
+    new_proc = proc_create("new process");
+
+}
 /**
  * Replaces the currently executing program with a newly loaded program image.
  * The pathname of the program to run is passed as program. The args argument is an array of 0-terminated strings.

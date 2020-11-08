@@ -659,29 +659,37 @@ int sys_fork(struct trapframe *tf, int *retval)
 int sys_execv(const char *program, char **args)
 {
     int ret;
+    int strSize_total;
     char *progname;
     if (program == NULL || args == NULL)
         return EFAULT; // indicates that one of the argument is an invalid pointer
 
     //copy the arguments from the old address space
-    ret = string_in(program, &progname, PATH_MAX);
+    size_t *path_len = kmalloc(sizeof(size_t));
+    ret = string_in(program, &progname, PATH_MAX, path_len);
     if (ret)
+    {
+        kfree(path_len);
         return ret;
+    }
+    kfree(path_len);
 
     //get number of arguments
     int argc;
     ret = get_argc(args, &args);
     if (ret)
+    {
         kfree(progname);
-    return ret;
+        return ret;
+    }
 
     char **args_copy = kmalloc(argc * sizeof(char *));
-    int *size = kmalloc(argc * sizeof(int));
-    ret = copy_in_args(argc, args, args_copy, size);
+    int *size_arr = kmalloc(argc * sizeof(int));
+    ret = copy_in_args(argc, args, args_copy, size_arr, &strSize_total);
     if (ret)
     {
         kfree(args_copy);
-        kfree(size);
+        kfree(size_arr);
         kfree(progname);
         return ret;
     }
@@ -692,7 +700,7 @@ int sys_execv(const char *program, char **args)
     if (as_new == NULL)
     {
         kfree(progname);
-        free_copied_args(argc, size, args_copy);
+        free_copied_args(argc, size_arr, args_copy);
         return ENOMEM; // insufficient virtual memory is available
     }
 
@@ -703,34 +711,29 @@ int sys_execv(const char *program, char **args)
     {
         kfree(progname);
         as_destroy(as_new);
-        free_copied_args(argc, size, args_copy);
+        free_copied_args(argc, size_arr, args_copy);
         return ENOMEM;
     }
 
     //switch to the new address space
-    as_destroy(as_old);
-    proc_setas(NULL);
-    as_deactivate();
-
     proc_setas(as_new);
     as_activate();
+
     //load a new executable
     ret = load_elf(vn, &entrypoint);
     if (ret)
     {
-        proc_setas(NULL);
-        as_deactivate();
-
+        //if err, switch back to old address space
         proc_setas(as_old);
         as_activate();
-
         as_destroy(as_new);
+
         vfs_close(vn);
         kfree(progname);
-        free_copied_args(argc, size, args_copy);
+        free_copied_args(argc, size_arr, args_copy);
         return ret;
     }
-
+    vfs_close(vn);
     //define a new stack region
     ret = as_define_stack(as_new, &stackptr);
     if (ret)
@@ -742,15 +745,26 @@ int sys_execv(const char *program, char **args)
         as_activate();
 
         as_destroy(as_new);
-        vfs_close(vn);
         kfree(progname);
-        free_copied_args(argc, size, args_copy);
+        free_copied_args(argc, size_arr, args_copy);
         return ret;
     }
+
     //copy the arguments to the new address space, properly arranging them
-    //clean up the old address space
+    userptr_t argv;
+    copy_out_args(argc, args_copy, size_arr, strSize_total, &stackptr, &argv);
+
+    kfree(progname);
+    free_copied_args(argc, size_arr, args_copy);
+
+    //clean up the old address space and
+    as_destroy(as_old);
     //wrap to user mode
-    return 0;
+    enter_new_process(argc, argv, NULL, stackptr, entrypoint);
+
+    // enter_new_process should not return
+    panic("enter_new_process returned in sys_execv\n");
+    return EINVAL;
 }
 /**
  * Returns the process id of the current process.
@@ -840,23 +854,34 @@ static int get_argc(char **args, int *argc)
 *Returns an error if an argument's length exceeds ARG_MAX.
 */
 static int
-copy_in_args(int argc, char **args, char **args_copy, int *size_arr) //TODO
+copy_in_args(int argc, char **args, char **args_copy, int *size_arr, int *strSize_total) //TODO:this implementation might not pass bigexecv test
 {
-    int ret;
-    size_t str_len;
-
+    int err;
+    size_t str_len, aligned_strlen;
+    char **kaddr = (char **)kmalloc(sizeof(char *));
+    *strSize_total = 0;
     for (int i = 0; i < argc; i++)
     {
-        ret = string_in((const char *)args[i], &args_copy[i], ARG_MAX, &str_len);
-        if (ret)
+        err = string_in((const char *)args[i], &args_copy[i], ARG_MAX, &str_len);
+        if (err)
         {
             for (int j = 0; j < i; j++)
             {
                 kfree(args_copy[j]);
             }
-            return ret;
+            return err;
         }
-        size_arr[i] = str_len;
+        //align the string pointer to 4 if not already
+        if (str_len % 4 != 0)
+        {
+            aligned_strlen = 4 * (str_len / 4) + 4;
+        }
+        else
+        {
+            aligned_strlen = strlen;
+        }
+        size_arr[i] = aligned_strlen;
+        *strSize_total += aligned_strlen;
     }
     return 0;
 }
@@ -869,4 +894,33 @@ static void free_copied_args(int argc, int *size, char **args_copy)
     }
     kfree(size);
     kfree(args_copy);
+}
+static void copy_out_args(int argc, char **args_copy, int *size, int strSize_total, vaddr_t *stackptr, userptr_t *argv)
+{
+    size_t actual_len;
+    int err;
+    userptr_t argv_base_addr = (*stackptr - (argc + 1) * sizeof(userptr_t *) - strSize_total * sizeof(char));
+    userptr_t str_base_addr = (*stackptr - strSize_total * sizeof(char));
+
+    *stackptr = argv_base_addr;
+    *argv = argv_base_addr;
+    for (int i = 0; i < argc; i++)
+    {
+        //copy out argument's pointer to the new stack
+        err = copyout(&args_copy[i], argv_base_addr, sizeof(char *));
+        if (err)
+        {
+            return err;
+        }
+        //copy out argument string to the new stack
+        err = copyoutstr(args_copy[i], str_base_addr, size[i], &actual_len);
+        if (err)
+        {
+            return err;
+        }
+
+        //adjust pointers to point to the next argument's position on stack
+        argv_base_addr += sizeof(userptr_t *);
+        str_base_addr += size[i];
+    }
 }

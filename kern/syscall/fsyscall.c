@@ -916,6 +916,7 @@ int sys_getpid(int *retval)
  * collect its exit status.
  * sys__exit does not return.
  */
+
 void sys__exit(int exit_code)
 {
     lock_acquire(curproc->pid_lock);
@@ -1006,6 +1007,7 @@ void kExit(int exit_code)
  * On success, returns the process id whose exit status is reported in status. 
  * On failure, the corresponding error code is returned.
  */
+
 int sys_waitpid(pid_t pid, int *status, int options, int *retval)
 {
     int ret;

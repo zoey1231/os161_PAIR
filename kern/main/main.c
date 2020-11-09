@@ -49,8 +49,11 @@
 #include <syscall.h>
 #include <test.h>
 #include <version.h>
-#include "autoconf.h"  // for pseudoconfig
+#include "autoconf.h" // for pseudoconfig
+#include <filetable.h>
+#include <proc.h>
 
+struct filetable *filetable;
 
 /*
  * These two pieces of data are maintained by the makefiles and build system.
@@ -68,15 +71,13 @@ extern const char buildconfig[];
  * Copyright message for the OS/161 base code.
  */
 static const char harvard_copyright[] =
-    "Copyright (c) 2000, 2001-2005, 2008-2011, 2013, 2014\n"
-    "   President and Fellows of Harvard College.  All rights reserved.\n";
-
+	"Copyright (c) 2000, 2001-2005, 2008-2011, 2013, 2014\n"
+	"   President and Fellows of Harvard College.  All rights reserved.\n";
 
 /*
  * Initial boot sequence.
  */
-static
-void
+static void
 boot(void)
 {
 	/*
@@ -102,7 +103,7 @@ boot(void)
 	kprintf("\n");
 
 	kprintf("Put-your-group-name-here's system version %s (%s #%d)\n",
-		GROUP_VERSION, buildconfig, buildversion);
+			GROUP_VERSION, buildconfig, buildversion);
 	kprintf("\n");
 
 	/* Early initialization. */
@@ -127,6 +128,7 @@ boot(void)
 	vm_bootstrap();
 	kprintf_bootstrap();
 	thread_start_cpus();
+	pidtable_init();
 
 	/* Default bootfs - but ignore failure, in case emu0 doesn't exist */
 	vfs_setbootfs("emu0");
@@ -143,8 +145,7 @@ boot(void)
 /*
  * Shutdown sequence. Opposite to boot().
  */
-static
-void
+static void
 shutdown(void)
 {
 
@@ -168,30 +169,31 @@ shutdown(void)
  * not because this is where system call code should go. Other syscall
  * code should probably live in the "syscall" directory.
  */
-int
-sys_reboot(int code)
+int sys_reboot(int code)
 {
-	switch (code) {
-	    case RB_REBOOT:
-	    case RB_HALT:
-	    case RB_POWEROFF:
+	switch (code)
+	{
+	case RB_REBOOT:
+	case RB_HALT:
+	case RB_POWEROFF:
 		break;
-	    default:
+	default:
 		return EINVAL;
 	}
 
 	shutdown();
 
-	switch (code) {
-	    case RB_HALT:
+	switch (code)
+	{
+	case RB_HALT:
 		kprintf("The system is halted.\n");
 		mainbus_halt();
 		break;
-	    case RB_REBOOT:
+	case RB_REBOOT:
 		kprintf("Rebooting...\n");
 		mainbus_reboot();
 		break;
-	    case RB_POWEROFF:
+	case RB_POWEROFF:
 		kprintf("The system is halted.\n");
 		mainbus_poweroff();
 		break;
@@ -205,11 +207,10 @@ sys_reboot(int code)
  * Kernel main. Boot up, then fork the menu thread; wait for a reboot
  * request, and then shut down.
  */
-void
-kmain(char *arguments)
+void kmain(char *arguments)
 {
 	boot();
-
+	filetable = filetable_create();
 	menu(arguments);
 
 	/* Should not get here */

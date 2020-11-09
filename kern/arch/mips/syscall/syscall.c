@@ -37,7 +37,8 @@
 #include <current.h>
 
 #include <endian.h>
-
+#include <addrspace.h>
+#include <proc.h>
 /*
  * System call dispatcher.
  *
@@ -203,4 +204,31 @@ void syscall(struct trapframe *tf)
 	/* ...or leak any spinlocks */
 	KASSERT(curthread->t_iplhigh_count == 0);
 }
+/**
+ * Entry function for a newly forked process
+ * set up the forked process's trapframe on stack and activite its addrspace
+ */
+void enter_forked_process(void *ptr, unsigned long nargs)
+{
+	KASSERT(nargs == 2);
 
+	void **argv = ptr;
+
+	struct trapframe *tf = (struct trapframe *)argv[0];
+	struct addrspace *as = (struct addrspace *)argv[1];
+
+	//declare a new trapframe so it can be allocated on the satck
+	struct trapframe new_tf;
+	// copy and tweak trapframe
+	memcpy(&new_tf, (const void *)tf, sizeof(struct trapframe));
+	new_tf.tf_v0 = 0;
+	new_tf.tf_a3 = 0;
+	new_tf.tf_epc += 4;
+
+	proc_setas(as);
+	as_activate();
+	kfree((struct trapframe *)tf);
+	kfree(ptr);
+
+	mips_usermode(&new_tf);
+}

@@ -8,25 +8,40 @@
  */
 struct fileDescriptorArray *fdArray_create()
 {
-    struct fileDescriptorArray *fdArray;
+    struct fileDescriptorArray *fd_record;
 
-    fdArray = kmalloc(sizeof(struct fileDescriptorArray));
-    if (fdArray == NULL)
+    fd_record = kmalloc(sizeof(struct fileDescriptorArray));
+    if (fd_record == NULL)
         return NULL;
 
-    fdArray->fda_lock = lock_create("fda_lock");
-    if (fdArray->fda_lock == NULL)
+    fd_record->fda_lock = lock_create("fda_lock");
+    if (fd_record->fda_lock == NULL)
     {
-        kfree(fdArray);
+        kfree(fd_record);
         return NULL;
     }
-    fdArray->fdArray = array_create();
-    array_init(fdArray->fdArray);
-    array_preallocate(fdArray->fdArray, OPEN_MAX);
+    fd_record->fdArray = array_create();
+    array_init(fd_record->fdArray);
+    array_preallocate(fd_record->fdArray, OPEN_MAX);
 
-    return fdArray;
+    return fd_record;
 }
-
+/**
+ * Destory a fileDescriptorArray
+ */
+void fdArray_destory(struct fileDescriptorArray *fd_arr)
+{
+    KASSERT(fd_arr != NULL);
+    int num = array_num(fd_arr->fdArray);
+    for (int i = num - 1; i >= 0; i--)
+    {
+        array_remove(fd_arr->fdArray, i);
+    }
+    KASSERT(array_num(fd_arr->fdArray) == 0);
+    array_destroy(fd_arr->fdArray);
+    lock_destroy(fd_arr->fda_lock);
+    kfree(fd_arr);
+}
 /**
  * Create a filetable keep track of opened files 
  */
@@ -56,6 +71,12 @@ struct filetable *filetable_create()
 void filetable_destory(struct filetable *ft)
 {
     KASSERT(ft != NULL);
+    int num = array_num(ft->entrys);
+    for (int i = num - 1; i >= 0; i--)
+    {
+        array_remove(ft->entrys, i);
+    }
+    KASSERT(array_num(ft->entrys) == 0);
     array_destroy(ft->entrys);
     lock_destroy(ft->ft_lock);
     kfree(ft);
@@ -117,14 +138,16 @@ void filetable_remove(struct filetable *ft, unsigned fd)
     array_remove(ft->entrys, fd);
 }
 
-int ft_copy(struct proc *proc_src, struct proc *proc_dst)
+void ft_copy(struct proc *proc_src, struct proc *proc_dst)
 {
-    int err;
+    KASSERT(proc_src != NULL);
+    KASSERT(proc_dst != NULL);
     lock_acquire(proc_src->p_fdArray->fda_lock);
     lock_acquire(proc_dst->p_fdArray->fda_lock);
-    for (unsigned int i = 0; i < array_num(proc_src->p_fdArray); i++)
+
+    for (unsigned int i = 0; i < array_num(proc_src->p_fdArray->fdArray); i++)
     {
-        struct fd_entry *fe_old = (struct fd_entry *)array_get(proc_src->p_fdArray, i);
+        struct fd_entry *fe_old = (struct fd_entry *)array_get(proc_src->p_fdArray->fdArray, i);
         struct fd_entry *fe_new = kmalloc(sizeof(struct fd_entry));
         KASSERT(fe_new != NULL);
 
@@ -134,20 +157,9 @@ int ft_copy(struct proc *proc_src, struct proc *proc_dst)
         VOP_INCREF(fe_old->file->vn);
         fe_new->fd = fe_old->fd;
         fe_new->file = fe_old->file;
-        lock_acquire(proc_dst->p_filetable->ft_lock);
-        err = filetable_add(proc_dst->p_filetable, fe_new->file);
-        if (err)
-        {
-            lock_release(proc_dst->p_filetable->ft_lock);
-            lock_release(fe_old->file->file_lock);
-            lock_release(proc_src->p_fdArray->fda_lock);
-            lock_release(proc_dst->p_fdArray->fda_lock);
-            return err;
-        }
-
-        lock_release(proc_dst->p_filetable->ft_lock);
         lock_release(fe_old->file->file_lock);
-        array_add(proc_dst->p_fdArray, fe_new, NULL);
+
+        array_add(proc_dst->p_fdArray->fdArray, fe_new, NULL);
     }
 
     lock_release(proc_src->p_fdArray->fda_lock);

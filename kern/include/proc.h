@@ -41,10 +41,16 @@
 #include <filetable.h>
 #include <limits.h>
 
-#define READY 0	  // index available for process
-#define RUNNING 1 // Process running
-#define ZOMBIE 2  // Process waiting to be killed
-#define ORPHAN 3  // Process running and parent exited
+/**
+ * process state
+ */
+#define READY 0	  // index into pidtable is avaliable for process
+#define RUNNING 1 // process is running
+#define ZOMBIE 2  // process has exited, waiting its parent to collect its exit state
+#define ORPHAN 3  // parent has exited but the process is still running
+
+#define OCCUPIED 1
+#define FREE 0
 
 struct addrspace;
 struct vnode;
@@ -61,37 +67,38 @@ struct proc
 	/* VM */
 	struct addrspace *p_addrspace; /* virtual address space */
 
-	/* PID */
-	pid_t pid; /* process id */
-	struct array *children;
 	/* VFS */
 	struct vnode *p_cwd; /* current working directory */
 	struct filetable *proc_ft;
 
 	/* add more material here as needed */
-	struct filetable *p_filetable;		   /*filetable array for this process*/
+	/* filetable */
 	struct fileDescriptorArray *p_fdArray; /* array to keep track of fd of each file in the file table for this process*/
+
+	/* PID */
+	pid_t pid;
+	int exit_code;
+	unsigned int proc_state;
+	struct lock *pid_lock;
+	struct cv *pid_cv; /* To allow for processes to sleep on waitpid */
+	struct array *children;
 };
 
+/**
+ * pidtable structure
+ * All arrays have PID_MAX+1 entries so that pid is equal to arrays' index
+ */
 struct pidtable
 {
-	struct lock *pid_lock;
-	struct cv *pid_cv;					 /* To allow for processes to sleep on waitpid */
+	struct lock *pt_lock;
 	struct proc *pid_procs[PID_MAX + 1]; /* Array to hold processes */
-	int pid_status[PID_MAX + 1];		 /* Array to hold process statuses */
-	int pid_waitcode[PID_MAX + 1];		 /* Array to hold the wait codes*/
 	int pid_available;					 /* Number of available pid spaces */
 	int pid_next;						 /* Lowest free PID */
+	unsigned int occupied[PID_MAX + 1];	 /*Array to indicate if an entry(i.e.,a PID) in pidtable is occupied or not*/
 };
 
+//pidtable is accessible for all processes
 extern struct pidtable *pidtable;
-
-/* Initializes the pid table*/
-void pidtable_init(void);
-struct proc *get_process(pid_t);
-int pidtable_add(struct proc *, int32_t *);
-void pidtable_exit(struct proc *, int32_t);
-void pidtable_freepid(pid_t);
 
 /* This is the process structure for the kernel and for kernel-only threads. */
 extern struct proc *kproc;
@@ -117,7 +124,25 @@ struct addrspace *proc_getas(void);
 /* Change the address space of the current process, and return the old one. */
 struct addrspace *proc_setas(struct addrspace *);
 
+/*Filetable*/
 /* Initialize the filetable of the current process*/
 int proc_filetable_init(struct proc *proc);
 
+/*PID*/
+
+struct proc *create_fork_proc(const char *name);
+
+/* Initialize the shared pidtable */
+void pidtable_init(void);
+
+/* Add a process to the pidtable and return assigned pid in the 2nd argument */
+int pidtable_add(struct proc *, int32_t *);
+
+/* Remove a given pid from the pidtable */
+void pidtable_remove(pid_t);
+
+void updateChildState(struct proc *proc);
+
+/* Reset a specific pidtable entry with index pid*/
+void reset_pidtable_entry(pid_t pid);
 #endif /* _PROC_H_ */

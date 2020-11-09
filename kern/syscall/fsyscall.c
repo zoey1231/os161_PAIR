@@ -19,6 +19,7 @@
 #include <kern/stattypes.h>
 #include <machine/trapframe.h>
 #include <addrspace.h>
+#include <kern/wait.h>
 
 /*
  * opens the file, device, or other kernel object named by the pathname filename. 
@@ -117,24 +118,24 @@ int sys_open(const userptr_t filename, int flags, unsigned int *retVal)
     fe->fd = fd;
     fe->file = file;
     *retVal = fd;
-    lock_acquire(curproc->p_filetable->ft_lock);
-    err = filetable_add(curproc->p_filetable, file);
+    lock_acquire(filetable->ft_lock);
+    err = filetable_add(filetable, file);
     if (err)
     {
         lock_release(curproc->p_fdArray->fda_lock);
-        lock_release(curproc->p_filetable->ft_lock);
+        lock_release(filetable->ft_lock);
         return err;
     }
     // build file entry and save it to the fd_Array
     err = array_add(curproc->p_fdArray->fdArray, fe, NULL);
     {
         lock_release(curproc->p_fdArray->fda_lock);
-        lock_release(curproc->p_filetable->ft_lock);
+        lock_release(filetable->ft_lock);
         return err;
     }
 
     lock_release(curproc->p_fdArray->fda_lock);
-    lock_release(curproc->p_filetable->ft_lock);
+    lock_release(filetable->ft_lock);
     return 0;
 }
 
@@ -551,22 +552,10 @@ int sys___getcwd(char *buf, size_t buflen, int *retVal)
     if (err)
         return err;
 
-    *retVal = buflen - uio.uio_resid; // either way should work
-    // *retVal = uio.uio_offset;
+    *retVal = buflen - uio.uio_resid;
     return 0;
 }
 
-void enter_usermode(void *data1, unsigned long data2)
-{
-    (void)data2;
-    void *tf = (void *)curthread->t_stack + 16;
-
-    memcpy(tf, (const void *)data1, sizeof(struct trapframe));
-    kfree((struct trapframe *)data1);
-
-    as_activate();
-    mips_usermode(tf);
-}
 /**
  * Copys the currently running process.
  * The two copies are identical except the child process has a new, unique process id.
@@ -578,17 +567,22 @@ void enter_usermode(void *data1, unsigned long data2)
  */
 int sys_fork(struct trapframe *tf, int *retval)
 {
+    struct addrspace *parent_as;
+    struct addrspace *child_as;
 
-    // declare a new process:
     struct proc *new_proc;
-    new_proc = proc_create("new process");
+    const char *new_proc_name = curproc->p_name;
+    const char *new_thread_name = curthread->t_name;
+
+    //create a child process
+    new_proc = create_fork_proc(new_proc_name);
     if (new_proc == NULL)
     {
         return ENOMEM;
     }
 
-    // add the new process to the pid table
-    int ret = pidtable_add(new_proc, &new_proc->pid);
+    // add the new process to the pid table and save the child process's pid in new_proc->pid
+    int ret = pidtable_add(new_proc, &(new_proc->pid));
     if (ret)
     {
         proc_destroy(new_proc);
@@ -596,14 +590,17 @@ int sys_fork(struct trapframe *tf, int *retval)
     }
 
     // copy address space from the parent process
-    ret = as_copy(curproc->p_addrspace, &new_proc->p_addrspace, new_proc->pid);
+    parent_as = proc_getas();
+    ret = as_copy(parent_as, &child_as);
+    new_proc->p_addrspace = child_as;
     if (ret)
     { // if copy is not successful, free new process
-        pidtable_freepid(new_proc->pid);
+        pidtable_remove(new_proc->pid);
         proc_destroy(new_proc);
         return ret;
     }
 
+    //make sure that the parent and the child processes have the same cwd
     spinlock_acquire(&curproc->p_lock);
     if (curproc->p_cwd != NULL)
     {
@@ -613,34 +610,156 @@ int sys_fork(struct trapframe *tf, int *retval)
     spinlock_release(&curproc->p_lock);
 
     // copy filetable from the parent process
-    ret = ft_copy(curproc, new_proc);
-    if (ret)
-    {
-        pidtable_freepid(new_proc->pid);
-        proc_destroy(new_proc);
-        return ret;
-    }
+    ft_copy(curproc, new_proc);
 
-    // copy and tweak trapframe
+    // copy trapframe from the parent
     struct trapframe *tf_dup = (struct trapframe *)kmalloc(sizeof(struct trapframe));
     if (tf_dup == NULL)
     {
         return ENOMEM;
     }
     memcpy((void *)tf_dup, (const void *)tf, sizeof(struct trapframe));
-    tf_dup->tf_v0 = 0;
-    tf_dup->tf_v1 = 0;
-    tf_dup->tf_a3 = 0;
-    tf_dup->tf_epc += 4;
 
+    //return child process's pid to parent
     *retval = new_proc->pid;
-    ret = thread_fork("new_thread", new_proc, enter_usermode, tf_dup, 1);
+
+    void **argv;
+    argv = kmalloc(2 * sizeof(void *));
+    argv[0] = tf_dup;
+    argv[1] = child_as;
+
+    //create child thread
+    ret = thread_fork(new_thread_name, new_proc, enter_forked_process, argv, 2);
     if (ret)
     {
         proc_destroy(new_proc);
-        pidtable_freepid(new_proc->pid);
+        pidtable_remove(new_proc->pid);
         kfree(tf_dup);
         return ret;
+    }
+    return 0;
+}
+
+static int
+string_in(const char *user_src, char **kern_dest, size_t copy_len, size_t *actural_len)
+{
+    int ret;
+
+    copy_len++;
+    *kern_dest = kmalloc(copy_len * sizeof(char));
+
+    ret = copyinstr((const_userptr_t)user_src, *kern_dest, copy_len, actural_len);
+    if (ret)
+    {
+        kfree(*kern_dest);
+        return ret;
+    }
+
+    return 0;
+}
+
+/**
+ * Return the number of arguments in argc
+ * Return error if there are more arguments than ARG_MAX
+ */
+static int get_argc(char **args, int *argc)
+{
+    int ret;
+    int i = 0;
+    char *next_arg;
+
+    //count the argument number one by one until we meet the null terminator, also check if there are too many arguments
+    do
+    {
+        i++; // i starts from 1
+        ret = copyin((const_userptr_t)&args[i], (void *)&next_arg, (size_t)sizeof(char *));
+        if (ret)
+        {
+            return ret;
+        }
+    } while (next_arg != NULL && (i + 1) * (sizeof(char *)) <= ARG_MAX);
+
+    if (next_arg != NULL)
+    {
+        return E2BIG;
+    }
+
+    *argc = i;
+    return 0;
+}
+
+/**
+*Copies the user strings into the kernel, populating size[] with their respective lengths.
+*Returns an error if an argument's length exceeds ARG_MAX.
+*/
+static int
+copy_in_args(int argc, char **args, char **args_copy, int *size_arr, int *strSize_total) //TODO:this implementation might not pass bigexecv test
+{
+    int err;
+    size_t str_len, aligned_strlen;
+    *strSize_total = 0;
+    for (int i = 0; i < argc; i++)
+    {
+        err = string_in((const char *)args[i], &args_copy[i], ARG_MAX, &str_len);
+        if (err)
+        {
+            for (int j = 0; j < i; j++)
+            {
+                kfree(args_copy[j]);
+            }
+            return err;
+        }
+        //align the string pointer to 4 if not already
+        if (str_len % 4 != 0)
+        {
+            aligned_strlen = (size_t)4 * (str_len / 4) + 4;
+        }
+        else
+        {
+            aligned_strlen = str_len;
+        }
+        size_arr[i] = aligned_strlen;
+        *strSize_total += aligned_strlen;
+    }
+    return 0;
+}
+
+static void free_copied_args(int argc, int *size, char **args_copy)
+{
+    for (int i = 0; i < argc; i++)
+    {
+        kfree(args_copy[i]);
+    }
+    kfree(size);
+    kfree(args_copy);
+}
+static int copy_out_args(int argc, char **args_copy, int *size, int strSize_total, vaddr_t *stackptr, userptr_t *argv)
+{
+    size_t actual_len;
+    int err;
+    userptr_t argv_base_addr = (userptr_t)(*stackptr - (argc + 1) * sizeof(userptr_t *) - strSize_total * sizeof(char));
+    userptr_t str_base_addr = (userptr_t)(*stackptr - strSize_total * sizeof(char));
+
+    *stackptr = (vaddr_t)argv_base_addr;
+    *argv = argv_base_addr;
+    for (int i = 0; i < argc; i++)
+    {
+        //copy out argument's pointer to the new stack
+        err = copyout(&args_copy[i], argv_base_addr, sizeof(char *));
+        if (err)
+        {
+            return err;
+        }
+        //copy out argument string to the new stack
+        err = copyoutstr(args_copy[i], str_base_addr, size[i], &actual_len);
+        if (err)
+        {
+            return err;
+        }
+
+        //adjust pointers to point to the next argument's position on stack
+        argv_base_addr += sizeof(userptr_t *);
+        str_base_addr += size[i];
     }
     return 0;
 }
@@ -676,7 +795,7 @@ int sys_execv(const char *program, char **args)
 
     //get number of arguments
     int argc;
-    ret = get_argc(args, &args);
+    ret = get_argc(args, &argc);
     if (ret)
     {
         kfree(progname);
@@ -752,7 +871,20 @@ int sys_execv(const char *program, char **args)
 
     //copy the arguments to the new address space, properly arranging them
     userptr_t argv;
-    copy_out_args(argc, args_copy, size_arr, strSize_total, &stackptr, &argv);
+    ret = copy_out_args(argc, args_copy, size_arr, strSize_total, &stackptr, &argv);
+    if (ret)
+    {
+        proc_setas(NULL);
+        as_deactivate();
+
+        proc_setas(as_old);
+        as_activate();
+
+        as_destroy(as_new);
+        kfree(progname);
+        free_copied_args(argc, size_arr, args_copy);
+        return ret;
+    }
 
     kfree(progname);
     free_copied_args(argc, size_arr, args_copy);
@@ -772,19 +904,94 @@ int sys_execv(const char *program, char **args)
  */
 int sys_getpid(int *retval)
 {
-    lock_acquire(pidtable->pid_lock);
+    lock_acquire(curproc->pid_lock);
     *retval = curproc->pid;
-    lock_release(pidtable->pid_lock);
+    lock_release(curproc->pid_lock);
     return 0;
 }
 /**
  * Cause the current process to exit. 
- * The exit code exitcode is reported back to other process(es) via the waitpid() call.
- * The process id of the exiting process should not be reused until all processes expected to collect 
- * the exit code with waitpid have done so.
+ * The exit code exit_code is reported back to other process(es) via the waitpid() call.
+ * The process id of the exiting process should not be reused until the process's parent has 
+ * collect its exit status.
  * sys__exit does not return.
  */
-void sys__exit(int exitcode);
+void sys__exit(int exit_code)
+{
+    lock_acquire(curproc->pid_lock);
+
+    //check the state of each child program of proc
+    //if the child has already exited,clear its pid information
+    //if not, update its state to ORPHAN to indicate its parent has exited
+    updateChildState(curproc);
+
+    pid_t pid = curproc->pid;
+
+    //if parent has already exited, clear the current process's pid information
+    if (curproc->proc_state == ORPHAN)
+    {
+        proc_destroy(curproc);
+        reset_pidtable_entry(pid);
+    }
+    // if parent is still running, update proc's state to ZOMBIE and record its exit code
+    else if (curproc->proc_state == RUNNING)
+    {
+        curproc->proc_state = ZOMBIE;
+        curproc->exit_code = _MKWAIT_EXIT(exit_code);
+    }
+    //should not branch here
+    else
+    {
+        panic("Tried to exit a bad process.\n");
+    }
+
+    //signal processes waiting for proc to exit
+    cv_broadcast(curproc->pid_cv, curproc->pid_lock);
+
+    lock_release(curproc->pid_lock);
+    thread_exit();
+}
+
+/**
+ * Do the same as sys__exit except that here using the _MKWAIT_SIG macro in kern/wait.h.
+ * called by kill_curthread()
+ */
+void kExit(int exit_code)
+{
+    lock_acquire(curproc->pid_lock);
+
+    //check the state of each child program of proc
+    //if the child has already exited,clear its pid information
+    //if not, update its state to ORPHAN to indicate its parent has exited
+    updateChildState(curproc);
+
+    pid_t pid = curproc->pid;
+
+    //if parent has already exited, clear the current process's pid information
+    if (curproc->proc_state == ORPHAN)
+    {
+        proc_destroy(curproc);
+        reset_pidtable_entry(pid);
+    }
+    // if parent is still running, update proc's state to ZOMBIE and record its exit code
+    else if (curproc->proc_state == RUNNING)
+    {
+        curproc->proc_state = ZOMBIE;
+        curproc->exit_code = _MKWAIT_SIG(exit_code);
+    }
+    //should not branch here
+    else
+    {
+        panic("Tried to exit a bad process.\n");
+    }
+
+    //signal processes waiting for proc to exit
+    cv_broadcast(curproc->pid_cv, curproc->pid_lock);
+
+    lock_release(curproc->pid_lock);
+    thread_exit();
+}
+
 /**
  * Wait for the process specified by pid to exit, and return an encoded exit status in the integer pointed 
  * to by status. If that process has exited already, waitpid returns immediately. 
@@ -794,133 +1001,89 @@ void sys__exit(int exitcode);
  * A process moves from "has exited already" to "does not exist" when every process that is expected to collect
  * its exit status with waitpid has done so.
  * If a parent process exits before one or more of its children, it can no longer be expected collect their exit status. 
- * The options argument should be 0. You are not required to implement any options. (However, the system should 
- * check to make sure that requests for options the system do not support are rejected.)
+ * not required to implement options in OS161.However, the system should 
+ * check to make sure that requests for options the system do not support are rejected.
  * On success, returns the process id whose exit status is reported in status. 
  * On failure, the corresponding error code is returned.
  */
-int sys_waitpid(pid_t pid, int *status, int options, int *retval);
-
-static int
-string_in(const char *user_src, char **kern_dest, size_t copy_len, size_t *actural_len)
+int sys_waitpid(pid_t pid, int *status, int options, int *retval)
 {
     int ret;
+    int *kbuf;
 
-    copy_len++;
-    *kern_dest = kmalloc(copy_len * sizeof(char));
-
-    ret = copyinstr((const_userptr_t)user_src, *kern_dest, copy_len, actural_len);
-    if (ret)
+    // allocate a kernel space to temporarily store the child process's exitcode
+    kbuf = kmalloc(sizeof(*kbuf));
+    if (kbuf == NULL)
     {
-        kfree(*kern_dest);
-        return ret;
+        return ENOMEM;
     }
 
-    return 0;
-}
-
-/**
- * Return the number of arguments in argc
- * Return error if there are more arguments than ARG_MAX
- */
-static int get_argc(char **args, int *argc)
-{
-    int ret;
-    int i = 0;
-    char *next_arg;
-
-    //count the argument number one by one until we meet the null terminator, also check if there are too many arguments
-    do
+    // reject requests for options since options are not required to be implemented in OS161
+    if (options != 0)
     {
-        i++; // i starts from 1
-        ret = copyin((const_userptr_t)&args[i], (void *)&next_arg, (size_t)sizeof(char *));
+        return EINVAL;
+    }
+
+    // No such a process if it's out of bound or its pid is not a valid entry in the pidtable
+    if (pid < PID_MIN || pid > PID_MAX || pidtable->occupied[pid] == FREE)
+    {
+        return ESRCH;
+    }
+
+    // check if the process specified by pid is a child process of curproc
+
+    // bool var indicates if pid is a child of current process
+    int flag = 0;
+    struct proc *proc_of_pid = pidtable->pid_procs[pid];
+    int num_of_children = array_num(curproc->children);
+    for (int i = 0; i < num_of_children; ++i)
+    {
+        struct proc *child = array_get(curproc->children, i);
+        if (child == proc_of_pid)
+        {
+            flag = 1;
+        }
+    }
+    //return if the process specified by pid is NOT a child process of curproc
+    if (flag == 0)
+    {
+        return ECHILD;
+    }
+
+    lock_acquire(proc_of_pid->pid_lock);
+
+    // wait until the child process to exit and store the child process's exitcode in status
+    while (proc_of_pid->proc_state != ZOMBIE)
+    {
+        cv_wait(proc_of_pid->pid_cv, proc_of_pid->pid_lock);
+    }
+    *kbuf = proc_of_pid->exit_code;
+
+    if (status != NULL)
+    {
+        //check if status pointer is properly aligned to 4
+        if (!((int)status & 0x3))
+        {
+            return EFAULT;
+        }
+        ret = copyout(kbuf, (userptr_t)status, sizeof(int));
         if (ret)
         {
-            return ret;
+            kfree(kbuf);
+            return EFAULT;
         }
-    } while (next_arg != NULL && (i + 1) * (sizeof(char *)) <= ARG_MAX);
-
-    if (next_arg != NULL)
-    {
-        return E2BIG;
     }
 
-    *argc = i;
+    //destroy the child's process structure and free its slot in pidtable
+    //since we, as the parent process, is the only one waiting for it
+    proc_destroy(proc_of_pid);
+    reset_pidtable_entry(pid);
+
+    kfree(kbuf);
+
+    //returns the pid whose exit status is reported in status
+    *retval = pid;
+    lock_release(proc_of_pid->pid_lock);
+
     return 0;
-}
-
-/**
-*Copies the user strings into the kernel, populating size[] with their respective lengths.
-*Returns an error if an argument's length exceeds ARG_MAX.
-*/
-static int
-copy_in_args(int argc, char **args, char **args_copy, int *size_arr, int *strSize_total) //TODO:this implementation might not pass bigexecv test
-{
-    int err;
-    size_t str_len, aligned_strlen;
-    char **kaddr = (char **)kmalloc(sizeof(char *));
-    *strSize_total = 0;
-    for (int i = 0; i < argc; i++)
-    {
-        err = string_in((const char *)args[i], &args_copy[i], ARG_MAX, &str_len);
-        if (err)
-        {
-            for (int j = 0; j < i; j++)
-            {
-                kfree(args_copy[j]);
-            }
-            return err;
-        }
-        //align the string pointer to 4 if not already
-        if (str_len % 4 != 0)
-        {
-            aligned_strlen = 4 * (str_len / 4) + 4;
-        }
-        else
-        {
-            aligned_strlen = strlen;
-        }
-        size_arr[i] = aligned_strlen;
-        *strSize_total += aligned_strlen;
-    }
-    return 0;
-}
-
-static void free_copied_args(int argc, int *size, char **args_copy)
-{
-    for (int i = 0; i < argc; i++)
-    {
-        kfree(args_copy[i]);
-    }
-    kfree(size);
-    kfree(args_copy);
-}
-static void copy_out_args(int argc, char **args_copy, int *size, int strSize_total, vaddr_t *stackptr, userptr_t *argv)
-{
-    size_t actual_len;
-    int err;
-    userptr_t argv_base_addr = (*stackptr - (argc + 1) * sizeof(userptr_t *) - strSize_total * sizeof(char));
-    userptr_t str_base_addr = (*stackptr - strSize_total * sizeof(char));
-
-    *stackptr = argv_base_addr;
-    *argv = argv_base_addr;
-    for (int i = 0; i < argc; i++)
-    {
-        //copy out argument's pointer to the new stack
-        err = copyout(&args_copy[i], argv_base_addr, sizeof(char *));
-        if (err)
-        {
-            return err;
-        }
-        //copy out argument string to the new stack
-        err = copyoutstr(args_copy[i], str_base_addr, size[i], &actual_len);
-        if (err)
-        {
-            return err;
-        }
-
-        //adjust pointers to point to the next argument's position on stack
-        argv_base_addr += sizeof(userptr_t *);
-        str_base_addr += size[i];
-    }
 }

@@ -31,7 +31,8 @@
 #define _SYSCALL_H_
 
 #include <cdefs.h> /* for __DEAD */
-struct trapframe;  /* from <machine/trapframe.h> */
+#include <addrspace.h>
+struct trapframe; /* from <machine/trapframe.h> */
 
 /*
  * The system call dispatcher.
@@ -44,7 +45,7 @@ void syscall(struct trapframe *tf);
  */
 
 /* Helper for fork(). You write this. */
-void enter_forked_process(struct trapframe *tf);
+void enter_forked_process(void *ptr, unsigned long nargs);
 
 /* Enter user mode. Does not return. */
 __DEAD void enter_new_process(int argc, userptr_t argv, userptr_t env,
@@ -69,7 +70,8 @@ int sys___getcwd(char *, size_t, int *);
 int sys_fork(struct trapframe *tf, int *retval);
 int sys_execv(const char *program, char **args);
 int sys_getpid(int *retval);
-void sys__exit(int exitcode);
+void sys__exit(int exit_code);
 int sys_waitpid(pid_t pid, int *status, int options, int *retval);
 
+void kExit(int exit_code);
 #endif /* _SYSCALL_H_ */

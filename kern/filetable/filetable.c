@@ -1,7 +1,7 @@
 #include <filetable.h>
 #include <array.h>
 #include <kern/errno.h>
-
+#include <proc.h>
 /**
  * Create a filedescriptor array to keep track of opened 
  * files and thier associated fd
@@ -115,4 +115,41 @@ void filetable_remove(struct filetable *ft, unsigned fd)
     KASSERT(ft != NULL);
     KASSERT(fd < OPEN_MAX);
     array_remove(ft->entrys, fd);
+}
+
+int ft_copy(struct proc *proc_src, struct proc *proc_dst)
+{
+    int err;
+    lock_acquire(proc_src->p_fdArray->fda_lock);
+    lock_acquire(proc_dst->p_fdArray->fda_lock);
+    for (unsigned int i = 0; i < array_num(proc_src->p_fdArray); i++)
+    {
+        struct fd_entry *fe_old = (struct fd_entry *)array_get(proc_src->p_fdArray, i);
+        struct fd_entry *fe_new = kmalloc(sizeof(struct fd_entry));
+        KASSERT(fe_new != NULL);
+
+        lock_acquire(fe_old->file->file_lock);
+        KASSERT(fe_old->file->valid && fe_old->file->refcount > 0);
+        fe_old->file->refcount++;
+        VOP_INCREF(fe_old->file->vn);
+        fe_new->fd = fe_old->fd;
+        fe_new->file = fe_old->file;
+        lock_acquire(proc_dst->p_filetable->ft_lock);
+        err = filetable_add(proc_dst->p_filetable, fe_new->file);
+        if (err)
+        {
+            lock_release(proc_dst->p_filetable->ft_lock);
+            lock_release(fe_old->file->file_lock);
+            lock_release(proc_src->p_fdArray->fda_lock);
+            lock_release(proc_dst->p_fdArray->fda_lock);
+            return err;
+        }
+
+        lock_release(proc_dst->p_filetable->ft_lock);
+        lock_release(fe_old->file->file_lock);
+        array_add(proc_dst->p_fdArray, fe_new, NULL);
+    }
+
+    lock_release(proc_src->p_fdArray->fda_lock);
+    lock_release(proc_dst->p_fdArray->fda_lock);
 }

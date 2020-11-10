@@ -130,7 +130,7 @@ static struct proc *proc_create(const char *name)
 		return NULL;
 	}
 	proc->p_fdArray = fdArray_create();
-	if (proc->proc_ft == NULL)
+	if (proc->p_fdArray == NULL)
 	{
 		kfree(proc->p_name);
 		kfree(proc);

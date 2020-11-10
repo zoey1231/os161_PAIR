@@ -1013,23 +1013,22 @@ int sys_waitpid(pid_t pid, int *status, int options, int *retval)
     int ret;
     int *kbuf;
 
-    // allocate a kernel space to temporarily store the child process's exitcode
-    kbuf = kmalloc(sizeof(*kbuf));
-    if (kbuf == NULL)
-    {
-        return ENOMEM;
-    }
-
     // reject requests for options since options are not required to be implemented in OS161
     if (options != 0)
     {
         return EINVAL;
     }
-
     // No such a process if it's out of bound or its pid is not a valid entry in the pidtable
     if (pid < PID_MIN || pid > PID_MAX || pidtable->occupied[pid] == FREE)
     {
         return ESRCH;
+    }
+
+    // allocate a kernel space to temporarily store the child process's exitcode
+    kbuf = kmalloc(sizeof(*kbuf));
+    if (kbuf == NULL)
+    {
+        return ENOMEM;
     }
 
     // check if the process specified by pid is a child process of curproc
@@ -1049,6 +1048,7 @@ int sys_waitpid(pid_t pid, int *status, int options, int *retval)
     //return if the process specified by pid is NOT a child process of curproc
     if (flag == 0)
     {
+        kfree(kbuf);
         return ECHILD;
     }
 
@@ -1064,8 +1064,9 @@ int sys_waitpid(pid_t pid, int *status, int options, int *retval)
     if (status != NULL)
     {
         //check if status pointer is properly aligned to 4
-        if (!((int)status & 0x3))
+        if (!((int)status % 4 == 0))
         {
+            kfree(kbuf);
             return EFAULT;
         }
         ret = copyout(kbuf, (userptr_t)status, sizeof(int));

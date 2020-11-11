@@ -659,8 +659,8 @@ string_in(const char *user_src, char **kern_dest, size_t copy_len, size_t *actur
 }
 
 /**
+ * Helper function for sys_execv()
  * Return the number of arguments in argc
- * Return error if there are more arguments than ARG_MAX
  */
 static int get_argc(char **args, int *argc)
 {
@@ -814,7 +814,17 @@ int sys_execv(const char *program, char **args)
     }
 
     char **args_copy = kmalloc(argc * sizeof(char *));
+    if (args_copy == NULL)
+    {
+        kfree(progname);
+        return ENOMEM;
+    }
     int *size_arr = kmalloc(argc * sizeof(int));
+    if (size_arr == NULL)
+    {
+        kfree(progname);
+        return ENOMEM;
+    }
     ret = copy_in_args(argc, args, args_copy, size_arr, &strSize_total);
     if (ret)
     {

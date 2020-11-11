@@ -650,10 +650,9 @@ void updateChildState(struct proc *proc)
 			{
 				pidtable->pid_next = child_pid;
 			}
-
-			proc_destroy(childProc);
 			reset_pidtable_entry(child_pid);
-		}
+			proc_destroy(childProc);
+				}
 		//if the child is still running, update its program state to ORPHAN to indicate its parent process has finished
 		else if (child_state == RUNNING)
 		{

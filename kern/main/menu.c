@@ -140,11 +140,11 @@ common_prog(int nargs, char **args)
 	}
 
 	/*
-	 * The new process will be destroyed when the program exits...
-	 * once you write the code for handling that.
+	 * Menu thread wait for the new process to finish to avoid compete for the console input/output
 	 */
-	int retval;
-	sys_waitpid(proc->pid, NULL, 0, &retval);
+	int retVal;
+	sys_waitpid(proc->pid, NULL, 0, &retVal);
+
 	return 0;
 }
 
@@ -723,5 +723,5 @@ void menu(char *args)
 		kprintf("OS/161 kernel [? for menu]: ");
 		kgets(buf, sizeof(buf));
 		menu_execute(buf, 0);
-		}
+	}
 }

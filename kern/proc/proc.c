@@ -593,6 +593,7 @@ int pidtable_add(struct proc *proc, int32_t *retval)
 		return ret;
 	}
 	pidtable->pid_procs[next_pid] = proc;
+	pidtable->occupied[next_pid] = OCCUPIED;
 	pidtable->pid_available--;
 
 	// iterate through avaliable spots to set pid_next to the smallest avaliable number in pidtable

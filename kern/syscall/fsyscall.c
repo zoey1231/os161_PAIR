@@ -742,24 +742,27 @@ static int copy_out_args(int argc, char **args_copy, int *size, int strSize_tota
 
     *stackptr = (vaddr_t)argv_base_addr;
     *argv = argv_base_addr;
+
+    userptr_t argv_temp_ptr = argv_base_addr;
+    userptr_t str_temp_ptr = str_base_addr;
     for (int i = 0; i < argc; i++)
     {
-        //copy out argument's pointer to the new stack
-        err = copyout(&args_copy[i], argv_base_addr, sizeof(char *));
-        if (err)
-        {
-            return err;
-        }
-        //copy out argument string to the new stack
-        err = copyoutstr(args_copy[i], str_base_addr, size[i], &actual_len);
-        if (err)
-        {
-            return err;
-        }
 
+        //copy out argument string to the new stack
+        err = copyoutstr(args_copy[i], str_temp_ptr, size[i], &actual_len);
+        if (err)
+        {
+            return err;
+        }
+        //copy out argument's pointer to the new stack
+        err = copyout(&str_temp_ptr, argv_temp_ptr, sizeof(char *));
+        if (err)
+        {
+            return err;
+        }
         //adjust pointers to point to the next argument's position on stack
-        argv_base_addr += sizeof(userptr_t *);
-        str_base_addr += size[i];
+        argv_temp_ptr += sizeof(userptr_t *);
+        str_temp_ptr += size[i];
     }
     return 0;
 }
@@ -782,6 +785,14 @@ int sys_execv(const char *program, char **args)
     char *progname;
     if (program == NULL || args == NULL)
         return EFAULT; // indicates that one of the argument is an invalid pointer
+
+    //check if program is a valid user space pointer
+    char ** check_ptr=kmalloc(sizeof(void*));
+    int ptr_err=copyin((const_userptr_t)program,check_ptr,sizeof(void*));
+    kfree(check_ptr);
+    if(ptr_err){ 
+        return ptr_err;
+    }
 
     //copy the arguments from the old address space
     size_t *path_len = kmalloc(sizeof(size_t));
@@ -951,6 +962,7 @@ void sys__exit(int exit_code)
 
     lock_release(curproc->pid_lock);
     thread_exit();
+    panic("program should not reach here");
 }
 
 /**
@@ -973,11 +985,14 @@ void kExit(int exit_code)
     {
         proc_destroy(curproc);
         reset_pidtable_entry(pid);
+        curproc->proc_state = READY;
+        curproc->exit_code = (int) NULL;
     }
     // if parent is still running, update proc's state to ZOMBIE and record its exit code
     else if (curproc->proc_state == RUNNING)
     {
         curproc->proc_state = ZOMBIE;
+        // curproc->exit_code = exit_code;
         curproc->exit_code = _MKWAIT_SIG(exit_code);
     }
     //should not branch here
@@ -1013,23 +1028,22 @@ int sys_waitpid(pid_t pid, int *status, int options, int *retval)
     int ret;
     int *kbuf;
 
-    // allocate a kernel space to temporarily store the child process's exitcode
-    kbuf = kmalloc(sizeof(*kbuf));
-    if (kbuf == NULL)
-    {
-        return ENOMEM;
-    }
-
     // reject requests for options since options are not required to be implemented in OS161
     if (options != 0)
     {
         return EINVAL;
     }
-
     // No such a process if it's out of bound or its pid is not a valid entry in the pidtable
     if (pid < PID_MIN || pid > PID_MAX || pidtable->occupied[pid] == FREE)
     {
         return ESRCH;
+    }
+
+    // allocate a kernel space to temporarily store the child process's exitcode
+    kbuf = kmalloc(sizeof(*kbuf));
+    if (kbuf == NULL)
+    {
+        return ENOMEM;
     }
 
     // check if the process specified by pid is a child process of curproc
@@ -1049,6 +1063,7 @@ int sys_waitpid(pid_t pid, int *status, int options, int *retval)
     //return if the process specified by pid is NOT a child process of curproc
     if (flag == 0)
     {
+        kfree(kbuf);
         return ECHILD;
     }
 
@@ -1064,8 +1079,9 @@ int sys_waitpid(pid_t pid, int *status, int options, int *retval)
     if (status != NULL)
     {
         //check if status pointer is properly aligned to 4
-        if (!((int)status & 0x3))
+        if (!((int)status % 4 == 0))
         {
+            kfree(kbuf);
             return EFAULT;
         }
         ret = copyout(kbuf, (userptr_t)status, sizeof(int));

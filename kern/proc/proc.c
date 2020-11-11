@@ -88,6 +88,7 @@ static int pidInfo_init(struct proc *proc)
 static void pidInfo_destory(struct proc *proc)
 {
 	cv_destroy(proc->pid_cv);
+	KASSERT(!lock_do_i_hold(proc->pid_lock));
 	lock_destroy(proc->pid_lock);
 
 	//destory children array
@@ -243,7 +244,7 @@ void proc_destroy(struct proc *proc)
 	pidInfo_destory(proc);
 
 	/* filetable fields */
-	if (proc->p_fdArray->fdArray != NULL)
+	if (proc->p_fdArray != NULL)
 	{
 		//close all opened files
 		while (array_num(proc->p_fdArray->fdArray) > 0)
@@ -255,6 +256,7 @@ void proc_destroy(struct proc *proc)
 		KASSERT(array_num(proc->p_fdArray->fdArray) == 0);
 		array_destroy(proc->p_fdArray->fdArray);
 		lock_destroy(proc->p_fdArray->fda_lock);
+		kfree(proc->p_fdArray);
 	}
 
 	threadarray_cleanup(&proc->p_threads);
@@ -567,7 +569,6 @@ void pidtable_init()
 int pidtable_add(struct proc *proc, int32_t *retval)
 {
 	pid_t next_pid;
-	int ret;
 	KASSERT(proc != NULL);
 
 	lock_acquire(pidtable->pt_lock);
@@ -586,12 +587,6 @@ int pidtable_add(struct proc *proc, int32_t *retval)
 	next_pid = pidtable->pid_next;
 	*retval = next_pid;
 
-	ret = pidInfo_init(proc);
-	if (ret)
-	{
-		lock_release(pidtable->pt_lock);
-		return ret;
-	}
 	pidtable->pid_procs[next_pid] = proc;
 	pidtable->occupied[next_pid] = OCCUPIED;
 	pidtable->pid_available--;
@@ -636,6 +631,7 @@ void updateChildState(struct proc *proc)
 	for (int i = 0; i < child_num; i++)
 	{
 		struct proc *childProc = array_get(proc->children, i);
+		lock_acquire(childProc->pid_lock);
 		int child_pid = childProc->pid;
 		int child_state = childProc->proc_state;
 
@@ -646,21 +642,28 @@ void updateChildState(struct proc *proc)
 		if (child_state == ZOMBIE)
 		{
 			// Update the next avaliable pid
+			lock_acquire(pidtable->pt_lock);
 			if (child_pid < pidtable->pid_next)
 			{
 				pidtable->pid_next = child_pid;
 			}
+
 			reset_pidtable_entry(child_pid);
+			lock_release(pidtable->pt_lock);
+
+			lock_release(childProc->pid_lock);
 			proc_destroy(childProc);
-				}
+		}
 		//if the child is still running, update its program state to ORPHAN to indicate its parent process has finished
 		else if (child_state == RUNNING)
 		{
 			child_state = ORPHAN;
+			lock_release(childProc->pid_lock);
 		}
 		//should not reach here
 		else
 		{
+			lock_release(childProc->pid_lock);
 			panic("Modify state on a bad child process");
 		}
 	}

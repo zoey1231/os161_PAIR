@@ -206,15 +206,6 @@ int sys_read(int fd, userptr_t buf, size_t buflen, int *retVal)
     struct file *file;
     int err;
 
-    char *kbuf = kmalloc(sizeof(char *));
-    // checking to see if buf provided is in user space
-    err = copyin((const_userptr_t)buf, (void *)kbuf, sizeof(char *));
-    if (err)
-    {
-        kfree(kbuf);
-        return EFAULT;
-    }
-
     int index = -1;
     lock_acquire(curproc->p_fdArray->fda_lock);
     struct fd_entry *fe = fd_get(curproc->p_fdArray->fdArray, fd, &index);
@@ -257,7 +248,6 @@ int sys_read(int fd, userptr_t buf, size_t buflen, int *retVal)
     lock_release(file->file_lock);
     lock_release(curproc->p_fdArray->fda_lock);
     *retVal = (int)buflen - uio.uio_resid;
-    kfree(kbuf);
 
     return 0;
 }
@@ -272,18 +262,9 @@ int sys_read(int fd, userptr_t buf, size_t buflen, int *retVal)
 int sys_write(int fd, const_userptr_t buf, size_t nbytes, int *retVal)
 {
     struct file *file;
-    char *kbuf = kmalloc(sizeof(char *));
     int err;
-    // checking to see if buf provided is in user space
-    err = copyin(buf, (void *)kbuf, sizeof(char *));
-
-    if (err)
-    {
-        kfree(kbuf);
-        return EFAULT;
-    }
-
     int index = -1;
+
     lock_acquire(curproc->p_fdArray->fda_lock);
     struct fd_entry *fe = fd_get(curproc->p_fdArray->fdArray, fd, &index);
     if (index == -1)
@@ -327,7 +308,6 @@ int sys_write(int fd, const_userptr_t buf, size_t nbytes, int *retVal)
     lock_release(file->file_lock);
     lock_release(curproc->p_fdArray->fda_lock);
     *retVal = (int)nbytes - uio.uio_resid;
-    kfree(kbuf);
 
     return 0;
 }
@@ -687,7 +667,36 @@ static int get_argc(char **args, int *argc)
     *argc = i;
     return 0;
 }
+/**
+ * Helper function for copy_in_args()
+ * Get the length of a string
+ */
+static int
+get_strLen(const char *string, int max_len, size_t *actual_length)
+{
 
+    int ret;
+    int i = -1;
+    char next_char;
+    do
+    {
+        i++;
+        ret = copyin((const_userptr_t)&string[i], (void *)&next_char, (size_t)sizeof(char));
+        if (ret)
+        {
+            return ret;
+        }
+
+    } while (next_char != 0 && i < max_len);
+
+    if (next_char != 0)
+    {
+        return E2BIG;
+    }
+
+    *actual_length = i;
+    return 0;
+}
 /**
 *Copies the user strings into the kernel, populating size[] with their respective lengths.
 *Returns an error if an argument's length exceeds ARG_MAX.
@@ -696,11 +705,12 @@ static int
 copy_in_args(int argc, char **args, char **args_copy, int *size_arr, int *strSize_total) //TODO:this implementation might not pass bigexecv test
 {
     int err;
-    size_t str_len, aligned_strlen;
+    size_t str_len, aligned_strlen, actual_len;
+    int arg_size_left = ARG_MAX;
     *strSize_total = 0;
     for (int i = 0; i < argc; i++)
     {
-        err = string_in((const char *)args[i], &args_copy[i], ARG_MAX, &str_len);
+        err = get_strLen((const char *)args[i], arg_size_left - 1, &str_len);
         if (err)
         {
             for (int j = 0; j < i; j++)
@@ -709,15 +719,18 @@ copy_in_args(int argc, char **args, char **args_copy, int *size_arr, int *strSiz
             }
             return err;
         }
+        err = string_in((const char *)args[i], &args_copy[i], str_len, &actual_len);
+
         //align the string pointer to 4 if not already
-        if (str_len % 4 != 0)
+        if (actual_len % 4 != 0)
         {
-            aligned_strlen = (size_t)4 * (str_len / 4) + 4;
+            aligned_strlen = (size_t)4 * (actual_len / 4) + 4;
         }
         else
         {
-            aligned_strlen = str_len;
+            aligned_strlen = actual_len;
         }
+        arg_size_left -= aligned_strlen;
         size_arr[i] = aligned_strlen;
         *strSize_total += aligned_strlen;
     }
@@ -785,14 +798,6 @@ int sys_execv(const char *program, char **args)
     char *progname;
     if (program == NULL || args == NULL)
         return EFAULT; // indicates that one of the argument is an invalid pointer
-
-    //check if program is a valid user space pointer
-    char ** check_ptr=kmalloc(sizeof(void*));
-    int ptr_err=copyin((const_userptr_t)program,check_ptr,sizeof(void*));
-    kfree(check_ptr);
-    if(ptr_err){ 
-        return ptr_err;
-    }
 
     //copy the arguments from the old address space
     size_t *path_len = kmalloc(sizeof(size_t));
@@ -941,7 +946,6 @@ int sys_getpid(int *retval)
 void sys__exit(int exit_code)
 {
     lock_acquire(curproc->pid_lock);
-
     //check the state of each child program of proc
     //if the child has already exited,clear its pid information
     //if not, update its state to ORPHAN to indicate its parent has exited
@@ -952,25 +956,31 @@ void sys__exit(int exit_code)
     //if parent has already exited, clear the current process's pid information
     if (curproc->proc_state == ORPHAN)
     {
-        proc_destroy(curproc);
+        lock_acquire(pidtable->pt_lock);
         reset_pidtable_entry(pid);
+        lock_release(pidtable->pt_lock);
+
+        lock_release(curproc->pid_lock);
+        proc_destroy(curproc);
     }
     // if parent is still running, update proc's state to ZOMBIE and record its exit code
     else if (curproc->proc_state == RUNNING)
     {
         curproc->proc_state = ZOMBIE;
         curproc->exit_code = _MKWAIT_EXIT(exit_code);
+
+        //signal processes waiting for curproc to exit
+        cv_broadcast(curproc->pid_cv, curproc->pid_lock);
+
+        lock_release(curproc->pid_lock);
     }
     //should not branch here
     else
     {
+        lock_release(curproc->pid_lock);
         panic("Tried to exit a bad process.\n");
     }
 
-    //signal processes waiting for proc to exit
-    cv_broadcast(curproc->pid_cv, curproc->pid_lock);
-
-    lock_release(curproc->pid_lock);
     thread_exit();
     panic("program should not reach here");
 }
@@ -982,7 +992,6 @@ void sys__exit(int exit_code)
 void kExit(int exit_code)
 {
     lock_acquire(curproc->pid_lock);
-
     //check the state of each child program of proc
     //if the child has already exited,clear its pid information
     //if not, update its state to ORPHAN to indicate its parent has exited
@@ -993,17 +1002,22 @@ void kExit(int exit_code)
     //if parent has already exited, clear the current process's pid information
     if (curproc->proc_state == ORPHAN)
     {
-        proc_destroy(curproc);
+        lock_acquire(pidtable->pt_lock);
         reset_pidtable_entry(pid);
-        curproc->proc_state = READY;
-        curproc->exit_code = (int) NULL;
+        lock_release(pidtable->pt_lock);
+
+        lock_release(curproc->pid_lock);
+        proc_destroy(curproc);
     }
     // if parent is still running, update proc's state to ZOMBIE and record its exit code
     else if (curproc->proc_state == RUNNING)
     {
         curproc->proc_state = ZOMBIE;
-        // curproc->exit_code = exit_code;
         curproc->exit_code = _MKWAIT_SIG(exit_code);
+
+        //signal processes waiting for curproc to exit
+        cv_broadcast(curproc->pid_cv, curproc->pid_lock);
+        lock_release(curproc->pid_lock);
     }
     //should not branch here
     else
@@ -1011,11 +1025,8 @@ void kExit(int exit_code)
         panic("Tried to exit a bad process.\n");
     }
 
-    //signal processes waiting for proc to exit
-    cv_broadcast(curproc->pid_cv, curproc->pid_lock);
-
-    lock_release(curproc->pid_lock);
     thread_exit();
+    panic("program should not reach here");
 }
 
 /**
@@ -1044,10 +1055,13 @@ int sys_waitpid(pid_t pid, int *status, int options, int *retval)
         return EINVAL;
     }
     // No such a process if it's out of bound or its pid is not a valid entry in the pidtable
+    lock_acquire(pidtable->pt_lock);
     if (pid < PID_MIN || pid > PID_MAX || pidtable->occupied[pid] == FREE)
     {
+        lock_release(pidtable->pt_lock);
         return ESRCH;
     }
+    lock_release(pidtable->pt_lock);
 
     // allocate a kernel space to temporarily store the child process's exitcode
     kbuf = kmalloc(sizeof(*kbuf));
@@ -1060,7 +1074,10 @@ int sys_waitpid(pid_t pid, int *status, int options, int *retval)
 
     // bool var indicates if pid is a child of current process
     int flag = 0;
+    lock_acquire(pidtable->pt_lock);
     struct proc *proc_of_pid = pidtable->pid_procs[pid];
+    lock_release(pidtable->pt_lock);
+
     int num_of_children = array_num(curproc->children);
     for (int i = 0; i < num_of_children; ++i)
     {
@@ -1091,27 +1108,25 @@ int sys_waitpid(pid_t pid, int *status, int options, int *retval)
         //check if status pointer is properly aligned to 4
         if (!((int)status % 4 == 0))
         {
+            lock_release(proc_of_pid->pid_lock);
             kfree(kbuf);
             return EFAULT;
         }
         ret = copyout(kbuf, (userptr_t)status, sizeof(int));
         if (ret)
         {
+            lock_release(proc_of_pid->pid_lock);
             kfree(kbuf);
             return EFAULT;
         }
     }
 
-    //destroy the child's process structure and free its slot in pidtable
-    //since we, as the parent process, is the only one waiting for it
-    proc_destroy(proc_of_pid);
-    reset_pidtable_entry(pid);
+    lock_release(proc_of_pid->pid_lock);
 
     kfree(kbuf);
 
     //returns the pid whose exit status is reported in status
     *retval = pid;
-    lock_release(proc_of_pid->pid_lock);
 
     return 0;
 }

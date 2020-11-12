@@ -44,7 +44,7 @@
 /**
  * process state
  */
-#define READY 0	  // index into pidtable is avaliable for process
+#define READY 0	  // process is runnable
 #define RUNNING 1 // process is running
 #define ZOMBIE 2  // process has exited, waiting its parent to collect its exit state
 #define ORPHAN 3  // parent has exited but the process is still running

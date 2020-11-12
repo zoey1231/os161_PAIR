@@ -65,13 +65,13 @@ static const char *const trapcodenames[NTRAPCODES] = {
 };
 
 /*
+
  * Function called when user-level code hits a fatal fault.
  */
 static void
 kill_curthread(vaddr_t epc, unsigned code, vaddr_t vaddr)
 {
 	int sig = 0;
-
 	KASSERT(code < NTRAPCODES);
 	switch (code)
 	{
@@ -82,27 +82,35 @@ kill_curthread(vaddr_t epc, unsigned code, vaddr_t vaddr)
 		/* should not be seen */
 		KASSERT(0);
 		sig = SIGABRT;
-		break;
+		kExit(sig);
+		// break;
 	case EX_MOD:
 	case EX_TLBL:
 	case EX_TLBS:
 		sig = SIGSEGV;
-		break;
+		kExit(sig);
 	case EX_ADEL:
+		sig = SIGBUS;
+		kExit(sig);
 	case EX_ADES:
 		sig = SIGBUS;
+		kExit(sig);
 		break;
 	case EX_BP:
 		sig = SIGTRAP;
+		kExit(sig);
 		break;
 	case EX_RI:
 		sig = SIGILL;
+		kExit(sig);
 		break;
 	case EX_CPU:
 		sig = SIGSEGV;
+		kExit(sig);
 		break;
 	case EX_OVF:
 		sig = SIGFPE;
+		kExit(sig);
 		break;
 	}
 

@@ -58,24 +58,6 @@ struct addrspace
         paddr_t as_stackpbase;
 #else
         /* Put stuff here for your VM system */
-
-        vaddr_t vbase1;
-        vaddr_t vtop1;
-        struct pte *region1;
-
-        vaddr_t vbase2;
-        vaddr_t vtop2;
-        struct pte *region2;
-        struct lock *as_lock;
-
-        vaddr_t stacktop;
-        vaddr_t stackbase;
-        struct pte *stackregion;
-
-        //add heap support
-        vaddr_t heaptop;
-        vaddr_t heapbase;
-        struct pte *heapregion;
 #endif
 };
 

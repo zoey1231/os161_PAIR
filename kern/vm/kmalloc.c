@@ -36,18 +36,17 @@
  * Kernel malloc.
  */
 
-
 /*
  * Fill a block with 0xdeadbeef.
  */
-static
-void
+static void
 fill_deadbeef(void *vptr, size_t len)
 {
 	uint32_t *ptr = vptr;
 	size_t i;
 
-	for (i=0; i<len/sizeof(uint32_t); i++) {
+	for (i = 0; i < len / sizeof(uint32_t); i++)
+	{
 		ptr[i] = 0xdeadbeef;
 	}
 }
@@ -113,10 +112,10 @@ fill_deadbeef(void *vptr, size_t len)
  * quite slow in its own right.
  */
 
-#undef  SLOW
+#undef SLOW
 #undef SLOWER
 #undef GUARDS
-#undef LABELS
+#define LABELS
 
 #undef CHECKBEEF
 #undef CHECKGUARDS
@@ -126,7 +125,7 @@ fill_deadbeef(void *vptr, size_t len)
 #if PAGE_SIZE == 4096
 
 #define NSIZES 8
-static const size_t sizes[NSIZES] = { 16, 32, 64, 128, 256, 512, 1024, 2048 };
+static const size_t sizes[NSIZES] = {16, 32, 64, 128, 256, 512, 1024, 2048};
 
 #define SMALLEST_SUBPAGE_SIZE 16
 #define LARGEST_SUBPAGE_SIZE 2048
@@ -139,11 +138,13 @@ static const size_t sizes[NSIZES] = { 16, 32, 64, 128, 256, 512, 1024, 2048 };
 
 ////////////////////////////////////////
 
-struct freelist {
+struct freelist
+{
 	struct freelist *next;
 };
 
-struct pageref {
+struct pageref
+{
 	struct pageref *next_samesize;
 	struct pageref *next_all;
 	vaddr_t pageaddr_and_blocktype;
@@ -151,11 +152,11 @@ struct pageref {
 	uint16_t nfree;
 };
 
-#define INVALID_OFFSET   (0xffff)
+#define INVALID_OFFSET (0xffff)
 
-#define PR_PAGEADDR(pr)  ((pr)->pageaddr_and_blocktype & PAGE_FRAME)
+#define PR_PAGEADDR(pr) ((pr)->pageaddr_and_blocktype & PAGE_FRAME)
 #define PR_BLOCKTYPE(pr) ((pr)->pageaddr_and_blocktype & ~PAGE_FRAME)
-#define MKPAB(pa, blk)   (((pa)&PAGE_FRAME) | ((blk) & ~PAGE_FRAME))
+#define MKPAB(pa, blk) (((pa)&PAGE_FRAME) | ((blk) & ~PAGE_FRAME))
 
 ////////////////////////////////////////
 
@@ -180,7 +181,8 @@ static struct spinlock kmalloc_spinlock = SPINLOCK_INITIALIZER;
 
 #define NPAGEREFS_PER_PAGE (PAGE_SIZE / sizeof(struct pageref))
 
-struct pagerefpage {
+struct pagerefpage
+{
 	struct pageref refs[NPAGEREFS_PER_PAGE];
 };
 
@@ -191,7 +193,8 @@ struct pagerefpage {
 
 #define INUSE_WORDS (NPAGEREFS_PER_PAGE / 32)
 
-struct kheap_root {
+struct kheap_root
+{
 	struct pagerefpage *page;
 	uint32_t pagerefs_inuse[INUSE_WORDS];
 	unsigned numinuse;
@@ -215,8 +218,7 @@ static struct kheap_root kheaproots[NUM_PAGEREFPAGES];
 /*
  * Allocate a page to hold pagerefs.
  */
-static
-void
+static void
 allocpagerefpage(struct kheap_root *root)
 {
 	vaddr_t va;
@@ -231,13 +233,15 @@ allocpagerefpage(struct kheap_root *root)
 	spinlock_release(&kmalloc_spinlock);
 	va = alloc_kpages(1);
 	spinlock_acquire(&kmalloc_spinlock);
-	if (va == 0) {
+	if (va == 0)
+	{
 		kprintf("kmalloc: Couldn't get a pageref page\n");
 		return;
 	}
 	KASSERT(va % PAGE_SIZE == 0);
 
-	if (root->page != NULL) {
+	if (root->page != NULL)
+	{
 		/* Oops, somebody else allocated it. */
 		spinlock_release(&kmalloc_spinlock);
 		free_kpages(va);
@@ -253,40 +257,47 @@ allocpagerefpage(struct kheap_root *root)
 /*
  * Allocate a pageref structure.
  */
-static
-struct pageref *
+static struct pageref *
 allocpageref(void)
 {
-	unsigned i,j;
+	unsigned i, j;
 	uint32_t k;
 	unsigned whichroot;
 	struct kheap_root *root;
 
-	for (whichroot=0; whichroot < NUM_PAGEREFPAGES; whichroot++) {
+	for (whichroot = 0; whichroot < NUM_PAGEREFPAGES; whichroot++)
+	{
 		root = &kheaproots[whichroot];
-		if (root->numinuse >= NPAGEREFS_PER_PAGE) {
+		if (root->numinuse >= NPAGEREFS_PER_PAGE)
+		{
 			continue;
 		}
 
 		/*
 		 * This should probably not be a linear search.
 		 */
-		for (i=0; i<INUSE_WORDS; i++) {
-			if (root->pagerefs_inuse[i]==0xffffffff) {
+		for (i = 0; i < INUSE_WORDS; i++)
+		{
+			if (root->pagerefs_inuse[i] == 0xffffffff)
+			{
 				/* full */
 				continue;
 			}
-			for (k=1,j=0; k!=0; k<<=1,j++) {
-				if ((root->pagerefs_inuse[i] & k)==0) {
+			for (k = 1, j = 0; k != 0; k <<= 1, j++)
+			{
+				if ((root->pagerefs_inuse[i] & k) == 0)
+				{
 					root->pagerefs_inuse[i] |= k;
 					root->numinuse++;
-					if (root->page == NULL) {
+					if (root->page == NULL)
+					{
 						allocpagerefpage(root);
 					}
-					if (root->page == NULL) {
+					if (root->page == NULL)
+					{
 						return NULL;
 					}
-					return &root->page->refs[i*32 + j];
+					return &root->page->refs[i * 32 + j];
 				}
 			}
 			KASSERT(0);
@@ -300,8 +311,7 @@ allocpageref(void)
 /*
  * Release a pageref structure.
  */
-static
-void
+static void
 freepageref(struct pageref *p)
 {
 	size_t i, j;
@@ -310,21 +320,24 @@ freepageref(struct pageref *p)
 	struct kheap_root *root;
 	struct pagerefpage *page;
 
-	for (whichroot=0; whichroot < NUM_PAGEREFPAGES; whichroot++) {
+	for (whichroot = 0; whichroot < NUM_PAGEREFPAGES; whichroot++)
+	{
 		root = &kheaproots[whichroot];
 
 		page = root->page;
-		if (page == NULL) {
+		if (page == NULL)
+		{
 			KASSERT(root->numinuse == 0);
 			continue;
 		}
 
-		j = p-page->refs;
+		j = p - page->refs;
 		/* note: j is unsigned, don't test < 0 */
-		if (j < NPAGEREFS_PER_PAGE) {
+		if (j < NPAGEREFS_PER_PAGE)
+		{
 			/* on this page */
-			i = j/32;
-			k = ((uint32_t)1) << (j%32);
+			i = j / 32;
+			k = ((uint32_t)1) << (j % 32);
 			KASSERT((root->pagerefs_inuse[i] & k) != 0);
 			root->pagerefs_inuse[i] &= ~k;
 			KASSERT(root->numinuse > 0);
@@ -365,8 +378,7 @@ static struct pageref *allbase;
 /*
  * Set up the guard values in a block we're about to return.
  */
-static
-void *
+static void *
 establishguardband(void *block, size_t clientsize, size_t blocksize)
 {
 	vaddr_t lowguard, lowsize, data, enddata, highguard, highsize, i;
@@ -383,10 +395,12 @@ establishguardband(void *block, size_t clientsize, size_t blocksize)
 
 	*(uint16_t *)lowguard = GUARD_HALFWORD;
 	*(uint16_t *)lowsize = clientsize;
-	for (i=data; i<enddata; i++) {
+	for (i = data; i < enddata; i++)
+	{
 		*(uint8_t *)i = GUARD_RETBYTE;
 	}
-	for (i=enddata; i<highguard; i++) {
+	for (i = enddata; i < highguard; i++)
+	{
 		*(uint8_t *)i = GUARD_FILLBYTE;
 	}
 	*(uint16_t *)highguard = GUARD_HALFWORD;
@@ -398,8 +412,7 @@ establishguardband(void *block, size_t clientsize, size_t blocksize)
 /*
  * Validate the guard values in an existing block.
  */
-static
-void
+static void
 checkguardband(vaddr_t blockaddr, size_t smallerblocksize, size_t blocksize)
 {
 	/*
@@ -430,7 +443,8 @@ checkguardband(vaddr_t blockaddr, size_t smallerblocksize, size_t blocksize)
 	KASSERT(clientsize + GUARD_OVERHEAD > smallerblocksize);
 	KASSERT(clientsize + GUARD_OVERHEAD <= blocksize);
 	enddata = data + clientsize;
-	for (i=enddata; i<highguard; i++) {
+	for (i = enddata; i < highguard; i++)
+	{
 		KASSERT(*(uint8_t *)i == GUARD_FILLBYTE);
 	}
 }
@@ -457,14 +471,14 @@ checkguardband(vaddr_t blockaddr, size_t smallerblocksize, size_t blocksize)
  * The first word of the block is a freelist pointer and should not be
  * deadbeef; the rest of the block should be only deadbeef.
  */
-static
-void
+static void
 checkdeadbeef(void *block, size_t blocksize)
 {
 	uint32_t *ptr = block;
 	size_t i;
 
-	for (i=1; i < blocksize/sizeof(uint32_t); i++) {
+	for (i = 1; i < blocksize / sizeof(uint32_t); i++)
+	{
 		KASSERT(ptr[i] == 0xdeadbeef);
 	}
 }
@@ -490,14 +504,13 @@ checkdeadbeef(void *block, size_t blocksize)
  * assertion as a bit in isfree is set twice; if not, a circular
  * freelist will cause an infinite loop.
  */
-static
-void
+static void
 checksubpage(struct pageref *pr)
 {
 	vaddr_t prpage, fla;
 	struct freelist *fl;
 	int blktype;
-	int nfree=0;
+	int nfree = 0;
 	size_t blocksize;
 #ifdef CHECKGUARDS
 	const unsigned maxblocks = PAGE_SIZE / SMALLEST_SUBPAGE_SIZE;
@@ -509,8 +522,9 @@ checksubpage(struct pageref *pr)
 
 	KASSERT(spinlock_do_i_hold(&kmalloc_spinlock));
 
-	if (pr->freelist_offset == INVALID_OFFSET) {
-		KASSERT(pr->nfree==0);
+	if (pr->freelist_offset == INVALID_OFFSET)
+	{
+		KASSERT(pr->nfree == 0);
 		return;
 	}
 
@@ -521,7 +535,8 @@ checksubpage(struct pageref *pr)
 
 #ifdef CHECKGUARDS
 	smallerblocksize = blktype > 0 ? sizes[blktype - 1] : 0;
-	for (i=0; i<numfreewords; i++) {
+	for (i = 0; i < numfreewords; i++)
+	{
 		isfree[i] = 0;
 	}
 #endif
@@ -537,15 +552,16 @@ checksubpage(struct pageref *pr)
 	fla = prpage + pr->freelist_offset;
 	fl = (struct freelist *)fla;
 
-	for (; fl != NULL; fl = fl->next) {
+	for (; fl != NULL; fl = fl->next)
+	{
 		fla = (vaddr_t)fl;
 		KASSERT(fla >= prpage && fla < prpage + PAGE_SIZE);
-		KASSERT((fla-prpage) % blocksize == 0);
+		KASSERT((fla - prpage) % blocksize == 0);
 #ifdef CHECKBEEF
 		checkdeadbeef(fl, blocksize);
 #endif
 #ifdef CHECKGUARDS
-		blocknum = (fla-prpage) / blocksize;
+		blocknum = (fla - prpage) / blocksize;
 		mask = 1U << (blocknum % 32);
 		KASSERT((isfree[blocknum / 32] & mask) == 0);
 		isfree[blocknum / 32] |= mask;
@@ -553,15 +569,17 @@ checksubpage(struct pageref *pr)
 		KASSERT(fl->next != fl);
 		nfree++;
 	}
-	KASSERT(nfree==pr->nfree);
+	KASSERT(nfree == pr->nfree);
 
 #ifdef CHECKGUARDS
 	numblocks = PAGE_SIZE / blocksize;
-	for (i=0; i<numblocks; i++) {
+	for (i = 0; i < numblocks; i++)
+	{
 		mask = 1U << (i % 32);
-		if ((isfree[i / 32] & mask) == 0) {
+		if ((isfree[i / 32] & mask) == 0)
+		{
 			checkguardband(prpage + i * blocksize,
-				       smallerblocksize, blocksize);
+						   smallerblocksize, blocksize);
 		}
 	}
 #endif
@@ -575,31 +593,33 @@ checksubpage(struct pageref *pr)
  * Run checksubpage on all heap pages. This also checks that the
  * linked lists of pagerefs are more or less intact.
  */
-static
-void
+static void
 checksubpages(void)
 {
 	struct pageref *pr;
 	int i;
-	unsigned sc=0, ac=0;
+	unsigned sc = 0, ac = 0;
 
 	KASSERT(spinlock_do_i_hold(&kmalloc_spinlock));
 
-	for (i=0; i<NSIZES; i++) {
-		for (pr = sizebases[i]; pr != NULL; pr = pr->next_samesize) {
+	for (i = 0; i < NSIZES; i++)
+	{
+		for (pr = sizebases[i]; pr != NULL; pr = pr->next_samesize)
+		{
 			checksubpage(pr);
 			KASSERT(sc < TOTAL_PAGEREFS);
 			sc++;
 		}
 	}
 
-	for (pr = allbase; pr != NULL; pr = pr->next_all) {
+	for (pr = allbase; pr != NULL; pr = pr->next_all)
+	{
 		checksubpage(pr);
 		KASSERT(ac < TOTAL_PAGEREFS);
 		ac++;
 	}
 
-	KASSERT(sc==ac);
+	KASSERT(sc == ac);
 }
 #else
 #define checksubpages()
@@ -612,7 +632,8 @@ checksubpages(void)
 #define LABEL_PTROFFSET sizeof(struct malloclabel)
 #define LABEL_OVERHEAD LABEL_PTROFFSET
 
-struct malloclabel {
+struct malloclabel
+{
 	vaddr_t label;
 	unsigned generation;
 };
@@ -622,8 +643,7 @@ static unsigned mallocgeneration;
 /*
  * Label a block of memory.
  */
-static
-void *
+static void *
 establishlabel(void *block, vaddr_t label)
 {
 	struct malloclabel *ml;
@@ -635,8 +655,7 @@ establishlabel(void *block, vaddr_t label)
 	return ml;
 }
 
-static
-void
+static void
 dump_subpage(struct pageref *pr, unsigned generation)
 {
 	unsigned blocksize = sizes[PR_BLOCKTYPE(pr)];
@@ -649,43 +668,49 @@ dump_subpage(struct pageref *pr, unsigned generation)
 	struct malloclabel *ml;
 	unsigned i;
 
-	for (i=0; i<numfreewords; i++) {
+	for (i = 0; i < numfreewords; i++)
+	{
 		isfree[i] = 0;
 	}
 
 	prpage = PR_PAGEADDR(pr);
 	fl = (struct freelist *)(prpage + pr->freelist_offset);
-	for (; fl != NULL; fl = fl->next) {
+	for (; fl != NULL; fl = fl->next)
+	{
 		i = ((vaddr_t)fl - prpage) / blocksize;
 		mask = 1U << (i % 32);
 		isfree[i / 32] |= mask;
 	}
 
-	for (i=0; i<numblocks; i++) {
+	for (i = 0; i < numblocks; i++)
+	{
 		mask = 1U << (i % 32);
-		if (isfree[i / 32] & mask) {
+		if (isfree[i / 32] & mask)
+		{
 			continue;
 		}
 		blockaddr = prpage + i * blocksize;
 		ml = (struct malloclabel *)blockaddr;
-		if (ml->generation != generation) {
+		if (ml->generation != generation)
+		{
 			continue;
 		}
 		kprintf("%5zu bytes at %p, allocated at %p\n",
-			blocksize, (void *)blockaddr, (void *)ml->label);
+				blocksize, (void *)blockaddr, (void *)ml->label);
 	}
 }
 
-static
-void
+static void
 dump_subpages(unsigned generation)
 {
 	struct pageref *pr;
 	int i;
 
 	kprintf("Remaining allocations from generation %u:\n", generation);
-	for (i=0; i<NSIZES; i++) {
-		for (pr = sizebases[i]; pr != NULL; pr = pr->next_samesize) {
+	for (i = 0; i < NSIZES; i++)
+	{
+		for (pr = sizebases[i]; pr != NULL; pr = pr->next_samesize)
+		{
 			dump_subpage(pr, generation);
 		}
 	}
@@ -697,8 +722,7 @@ dump_subpages(unsigned generation)
 
 #endif /* LABELS */
 
-void
-kheap_nextgeneration(void)
+void kheap_nextgeneration(void)
 {
 #ifdef LABELS
 	spinlock_acquire(&kmalloc_spinlock);
@@ -707,8 +731,7 @@ kheap_nextgeneration(void)
 #endif
 }
 
-void
-kheap_dump(void)
+void kheap_dump(void)
 {
 #ifdef LABELS
 	/* print the whole thing with interrupts off */
@@ -720,15 +743,15 @@ kheap_dump(void)
 #endif
 }
 
-void
-kheap_dumpall(void)
+void kheap_dumpall(void)
 {
 #ifdef LABELS
 	unsigned i;
 
 	/* print the whole thing with interrupts off */
 	spinlock_acquire(&kmalloc_spinlock);
-	for (i=0; i<=mallocgeneration; i++) {
+	for (i = 0; i <= mallocgeneration; i++)
+	{
 		dump_subpages(i);
 	}
 	spinlock_release(&kmalloc_spinlock);
@@ -742,21 +765,21 @@ kheap_dumpall(void)
 /*
  * Print the allocated/freed map of a single kernel heap page.
  */
-static
-void
+static void
 subpage_stats(struct pageref *pr)
 {
 	vaddr_t prpage, fla;
 	struct freelist *fl;
 	int blktype;
 	unsigned i, n, index;
-	uint32_t freemap[PAGE_SIZE / (SMALLEST_SUBPAGE_SIZE*32)];
+	uint32_t freemap[PAGE_SIZE / (SMALLEST_SUBPAGE_SIZE * 32)];
 
 	checksubpage(pr);
 	KASSERT(spinlock_do_i_hold(&kmalloc_spinlock));
 
 	/* clear freemap[] */
-	for (i=0; i<ARRAYCOUNT(freemap); i++) {
+	for (i = 0; i < ARRAYCOUNT(freemap); i++)
+	{
 		freemap[i] = 0;
 	}
 
@@ -768,26 +791,30 @@ subpage_stats(struct pageref *pr)
 	n = PAGE_SIZE / sizes[blktype];
 	KASSERT(n <= 32 * ARRAYCOUNT(freemap));
 
-	if (pr->freelist_offset != INVALID_OFFSET) {
+	if (pr->freelist_offset != INVALID_OFFSET)
+	{
 		fla = prpage + pr->freelist_offset;
 		fl = (struct freelist *)fla;
 
-		for (; fl != NULL; fl = fl->next) {
+		for (; fl != NULL; fl = fl->next)
+		{
 			fla = (vaddr_t)fl;
-			index = (fla-prpage) / sizes[blktype];
-			KASSERT(index<n);
-			freemap[index/32] |= (1<<(index%32));
+			index = (fla - prpage) / sizes[blktype];
+			KASSERT(index < n);
+			freemap[index / 32] |= (1 << (index % 32));
 		}
 	}
 
 	kprintf("at 0x%08lx: size %-4lu  %u/%u free\n",
-		(unsigned long)prpage, (unsigned long) sizes[blktype],
-		(unsigned) pr->nfree, n);
+			(unsigned long)prpage, (unsigned long)sizes[blktype],
+			(unsigned)pr->nfree, n);
 	kprintf("   ");
-	for (i=0; i<n; i++) {
-		int val = (freemap[i/32] & (1<<(i%32)))!=0;
+	for (i = 0; i < n; i++)
+	{
+		int val = (freemap[i / 32] & (1 << (i % 32))) != 0;
 		kprintf("%c", val ? '.' : '*');
-		if (i%64==63 && i<n-1) {
+		if (i % 64 == 63 && i < n - 1)
+		{
 			kprintf("\n   ");
 		}
 	}
@@ -797,8 +824,7 @@ subpage_stats(struct pageref *pr)
 /*
  * Print the whole heap.
  */
-void
-kheap_printstats(void)
+void kheap_printstats(void)
 {
 	struct pageref *pr;
 
@@ -807,7 +833,8 @@ kheap_printstats(void)
 
 	kprintf("Subpage allocator status:\n");
 
-	for (pr = allbase; pr != NULL; pr = pr->next_all) {
+	for (pr = allbase; pr != NULL; pr = pr->next_all)
+	{
 		subpage_stats(pr);
 	}
 
@@ -819,25 +846,28 @@ kheap_printstats(void)
 /*
  * Remove a pageref from both lists that it's on.
  */
-static
-void
+static void
 remove_lists(struct pageref *pr, int blktype)
 {
 	struct pageref **guy;
 
-	KASSERT(blktype>=0 && blktype<NSIZES);
+	KASSERT(blktype >= 0 && blktype < NSIZES);
 
-	for (guy = &sizebases[blktype]; *guy; guy = &(*guy)->next_samesize) {
+	for (guy = &sizebases[blktype]; *guy; guy = &(*guy)->next_samesize)
+	{
 		checksubpage(*guy);
-		if (*guy == pr) {
+		if (*guy == pr)
+		{
 			*guy = pr->next_samesize;
 			break;
 		}
 	}
 
-	for (guy = &allbase; *guy; guy = &(*guy)->next_all) {
+	for (guy = &allbase; *guy; guy = &(*guy)->next_all)
+	{
 		checksubpage(*guy);
-		if (*guy == pr) {
+		if (*guy == pr)
+		{
 			*guy = pr->next_all;
 			break;
 		}
@@ -848,19 +878,19 @@ remove_lists(struct pageref *pr, int blktype)
  * Given a requested client size, return the block type, that is, the
  * index into the sizes[] array for the block size to use.
  */
-static
-inline
-int blocktype(size_t clientsz)
+static inline int blocktype(size_t clientsz)
 {
 	unsigned i;
-	for (i=0; i<NSIZES; i++) {
-		if (clientsz <= sizes[i]) {
+	for (i = 0; i < NSIZES; i++)
+	{
+		if (clientsz <= sizes[i])
+		{
 			return i;
 		}
 	}
 
 	panic("Subpage allocator cannot handle allocation of size %zu\n",
-	      clientsz);
+		  clientsz);
 
 	// keep compiler happy
 	return 0;
@@ -870,20 +900,20 @@ int blocktype(size_t clientsz)
  * Allocate a block of size SZ, where SZ is not large enough to
  * warrant a whole-page allocation.
  */
-static
-void *
+static void *
 subpage_kmalloc(size_t sz
 #ifdef LABELS
-		, vaddr_t label
+				,
+				vaddr_t label
 #endif
-	)
+)
 {
-	unsigned blktype;	// index into sizes[] that we're using
-	struct pageref *pr;	// pageref for page we're allocating from
-	vaddr_t prpage;		// PR_PAGEADDR(pr)
-	vaddr_t fla;		// free list entry address
-	struct freelist *volatile fl;	// free list entry
-	void *retptr;		// our result
+	unsigned blktype;			  // index into sizes[] that we're using
+	struct pageref *pr;			  // pageref for page we're allocating from
+	vaddr_t prpage;				  // PR_PAGEADDR(pr)
+	vaddr_t fla;				  // free list entry address
+	struct freelist *volatile fl; // free list entry
+	void *retptr;				  // our result
 
 	volatile int i;
 
@@ -909,13 +939,15 @@ subpage_kmalloc(size_t sz
 
 	checksubpages();
 
-	for (pr = sizebases[blktype]; pr != NULL; pr = pr->next_samesize) {
+	for (pr = sizebases[blktype]; pr != NULL; pr = pr->next_samesize)
+	{
 
 		/* check for corruption */
 		KASSERT(PR_BLOCKTYPE(pr) == blktype);
 		checksubpage(pr);
 
-		if (pr->nfree > 0) {
+		if (pr->nfree > 0)
+		{
 
 		doalloc: /* comes here after getting a whole fresh page */
 
@@ -928,13 +960,15 @@ subpage_kmalloc(size_t sz
 			fl = fl->next;
 			pr->nfree--;
 
-			if (fl != NULL) {
+			if (fl != NULL)
+			{
 				KASSERT(pr->nfree > 0);
 				fla = (vaddr_t)fl;
 				KASSERT(fla - prpage < PAGE_SIZE);
 				pr->freelist_offset = fla - prpage;
 			}
-			else {
+			else
+			{
 				KASSERT(pr->nfree == 0);
 				pr->freelist_offset = INVALID_OFFSET;
 			}
@@ -963,7 +997,8 @@ subpage_kmalloc(size_t sz
 
 	spinlock_release(&kmalloc_spinlock);
 	prpage = alloc_kpages(1);
-	if (prpage==0) {
+	if (prpage == 0)
+	{
 		/* Out of memory. */
 		kprintf("kmalloc: Subpage allocator couldn't get a page\n");
 		return NULL;
@@ -976,7 +1011,8 @@ subpage_kmalloc(size_t sz
 	spinlock_acquire(&kmalloc_spinlock);
 
 	pr = allocpageref();
-	if (pr==NULL) {
+	if (pr == NULL)
+	{
 		/* Couldn't allocate accounting space for the new page. */
 		spinlock_release(&kmalloc_spinlock);
 		free_kpages(prpage);
@@ -996,14 +1032,15 @@ subpage_kmalloc(size_t sz
 	fla = prpage;
 	fl = (struct freelist *)fla;
 	fl->next = NULL;
-	for (i=1; i<pr->nfree; i++) {
-		fl = (struct freelist *)(fla + i*sizes[blktype]);
-		fl->next = (struct freelist *)(fla + (i-1)*sizes[blktype]);
+	for (i = 1; i < pr->nfree; i++)
+	{
+		fl = (struct freelist *)(fla + i * sizes[blktype]);
+		fl->next = (struct freelist *)(fla + (i - 1) * sizes[blktype]);
 		KASSERT(fl != fl->next);
 	}
-	fla = (vaddr_t) fl;
+	fla = (vaddr_t)fl;
 	pr->freelist_offset = fla - prpage;
-	KASSERT(pr->freelist_offset == (pr->nfree-1)*sizes[blktype]);
+	KASSERT(pr->freelist_offset == (pr->nfree - 1) * sizes[blktype]);
 
 	pr->next_samesize = sizebases[blktype];
 	sizebases[blktype] = pr;
@@ -1019,24 +1056,24 @@ subpage_kmalloc(size_t sz
  * Free a pointer previously returned from subpage_kmalloc. If the
  * pointer is not on any heap page we recognize, return -1.
  */
-static
-int
+static int
 subpage_kfree(void *ptr)
 {
-	int blktype;		// index into sizes[] that we're using
-	vaddr_t ptraddr;	// same as ptr
-	struct pageref *pr;	// pageref for page we're freeing in
-	vaddr_t prpage;		// PR_PAGEADDR(pr)
-	vaddr_t fla;		// free list entry address
-	struct freelist *fl;	// free list entry
-	vaddr_t offset;		// offset into page
+	int blktype;		 // index into sizes[] that we're using
+	vaddr_t ptraddr;	 // same as ptr
+	struct pageref *pr;	 // pageref for page we're freeing in
+	vaddr_t prpage;		 // PR_PAGEADDR(pr)
+	vaddr_t fla;		 // free list entry address
+	struct freelist *fl; // free list entry
+	vaddr_t offset;		 // offset into page
 #ifdef GUARDS
 	size_t blocksize, smallerblocksize;
 #endif
 
 	ptraddr = (vaddr_t)ptr;
 #ifdef GUARDS
-	if (ptraddr % PAGE_SIZE == 0) {
+	if (ptraddr % PAGE_SIZE == 0)
+	{
 		/*
 		 * With guard bands, all client-facing subpage
 		 * pointers are offset by GUARD_PTROFFSET (which is 4)
@@ -1052,7 +1089,8 @@ subpage_kfree(void *ptr)
 	ptraddr -= GUARD_PTROFFSET;
 #endif
 #ifdef LABELS
-	if (ptraddr % PAGE_SIZE == 0) {
+	if (ptraddr % PAGE_SIZE == 0)
+	{
 		/* ditto */
 		return -1;
 	}
@@ -1063,21 +1101,24 @@ subpage_kfree(void *ptr)
 
 	checksubpages();
 
-	for (pr = allbase; pr; pr = pr->next_all) {
+	for (pr = allbase; pr; pr = pr->next_all)
+	{
 		prpage = PR_PAGEADDR(pr);
 		blktype = PR_BLOCKTYPE(pr);
 		KASSERT(blktype >= 0 && blktype < NSIZES);
 
 		/* check for corruption */
-		KASSERT(blktype>=0 && blktype<NSIZES);
+		KASSERT(blktype >= 0 && blktype < NSIZES);
 		checksubpage(pr);
 
-		if (ptraddr >= prpage && ptraddr < prpage + PAGE_SIZE) {
+		if (ptraddr >= prpage && ptraddr < prpage + PAGE_SIZE)
+		{
 			break;
 		}
 	}
 
-	if (pr==NULL) {
+	if (pr == NULL)
+	{
 		/* Not on any of our pages - not a subpage allocation */
 		spinlock_release(&kmalloc_spinlock);
 		return -1;
@@ -1086,7 +1127,8 @@ subpage_kfree(void *ptr)
 	offset = ptraddr - prpage;
 
 	/* Check for proper positioning and alignment */
-	if (offset >= PAGE_SIZE || offset % sizes[blktype] != 0) {
+	if (offset >= PAGE_SIZE || offset % sizes[blktype] != 0)
+	{
 		panic("kfree: subpage free of invalid addr %p\n", ptr);
 	}
 
@@ -1109,9 +1151,12 @@ subpage_kfree(void *ptr)
 
 	fla = prpage + offset;
 	fl = (struct freelist *)fla;
-	if (pr->freelist_offset == INVALID_OFFSET) {
+	if (pr->freelist_offset == INVALID_OFFSET)
+	{
 		fl->next = NULL;
-	} else {
+	}
+	else
+	{
 		fl->next = (struct freelist *)(prpage + pr->freelist_offset);
 
 		/* this block should not already be on the free list! */
@@ -1119,7 +1164,8 @@ subpage_kfree(void *ptr)
 		{
 			struct freelist *fl2;
 
-			for (fl2 = fl->next; fl2 != NULL; fl2 = fl2->next) {
+			for (fl2 = fl->next; fl2 != NULL; fl2 = fl2->next)
+			{
 				KASSERT(fl2 != fl);
 			}
 		}
@@ -1132,7 +1178,8 @@ subpage_kfree(void *ptr)
 	pr->nfree++;
 
 	KASSERT(pr->nfree <= PAGE_SIZE / sizes[blktype]);
-	if (pr->nfree == PAGE_SIZE / sizes[blktype]) {
+	if (pr->nfree == PAGE_SIZE / sizes[blktype])
+	{
 		/* Whole page is free. */
 		remove_lists(pr, blktype);
 		freepageref(pr);
@@ -1140,7 +1187,8 @@ subpage_kfree(void *ptr)
 		spinlock_release(&kmalloc_spinlock);
 		free_kpages(prpage);
 	}
-	else {
+	else
+	{
 		spinlock_release(&kmalloc_spinlock);
 	}
 
@@ -1177,14 +1225,16 @@ kmalloc(size_t sz)
 #endif /* LABELS */
 
 	checksz = sz + GUARD_OVERHEAD + LABEL_OVERHEAD;
-	if (checksz >= LARGEST_SUBPAGE_SIZE) {
+	if (checksz >= LARGEST_SUBPAGE_SIZE)
+	{
 		unsigned long npages;
 		vaddr_t address;
 
 		/* Round up to a whole number of pages. */
-		npages = (sz + PAGE_SIZE - 1)/PAGE_SIZE;
+		npages = (sz + PAGE_SIZE - 1) / PAGE_SIZE;
 		address = alloc_kpages(npages);
-		if (address==0) {
+		if (address == 0)
+		{
 			return NULL;
 		}
 		KASSERT(address % PAGE_SIZE == 0);
@@ -1202,17 +1252,18 @@ kmalloc(size_t sz)
 /*
  * Free a block previously returned from kmalloc.
  */
-void
-kfree(void *ptr)
+void kfree(void *ptr)
 {
 	/*
 	 * Try subpage first; if that fails, assume it's a big allocation.
 	 */
-	if (ptr == NULL) {
+	if (ptr == NULL)
+	{
 		return;
-	} else if (subpage_kfree(ptr)) {
-		KASSERT((vaddr_t)ptr%PAGE_SIZE==0);
+	}
+	else if (subpage_kfree(ptr))
+	{
+		KASSERT((vaddr_t)ptr % PAGE_SIZE == 0);
 		free_kpages((vaddr_t)ptr);
 	}
 }
-

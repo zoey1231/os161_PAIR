@@ -1,5 +1,5 @@
 build/*
 userland/build/*
 defs.mk
-kern/compile/
+kern/compile/*
 configure

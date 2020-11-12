@@ -205,8 +205,9 @@ void syscall(struct trapframe *tf)
 	KASSERT(curthread->t_iplhigh_count == 0);
 }
 /**
- * Entry function for a newly forked process
- * set up the forked process's trapframe on stack and activite its addrspace
+ * Entry function for a newly forked process.
+ * Set up the forked process's trapframe on stack and activite its addrspace before letting the process 
+ * enter user mode.
  */
 void enter_forked_process(void *ptr, unsigned long nargs)
 {

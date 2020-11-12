@@ -33,9 +33,9 @@ void fdArray_destory(struct fileDescriptorArray *fd_arr)
 {
     KASSERT(fd_arr != NULL);
     int num = array_num(fd_arr->fdArray);
-    for (int i = num - 1; i >= 0; i--)
+    for (int i = 0; i < num; i++)
     {
-        array_remove(fd_arr->fdArray, i);
+        array_remove(fd_arr->fdArray, 0);
     }
     KASSERT(array_num(fd_arr->fdArray) == 0);
     array_destroy(fd_arr->fdArray);
@@ -72,9 +72,9 @@ void filetable_destory(struct filetable *ft)
 {
     KASSERT(ft != NULL);
     int num = array_num(ft->entrys);
-    for (int i = num - 1; i >= 0; i--)
+    for (int i = 0; i < num; i++)
     {
-        array_remove(ft->entrys, i);
+        array_remove(ft->entrys, 0);
     }
     KASSERT(array_num(ft->entrys) == 0);
     array_destroy(ft->entrys);
@@ -138,13 +138,19 @@ void filetable_remove(struct filetable *ft, unsigned fd)
     array_remove(ft->entrys, fd);
 }
 
+/**
+ * Helper function for sys_fork()
+ * Copy proc_src's fileDescriptor array into proc_dst's fileDescriptor array
+ */
 void ft_copy(struct proc *proc_src, struct proc *proc_dst)
 {
     KASSERT(proc_src != NULL);
     KASSERT(proc_dst != NULL);
+
     lock_acquire(proc_src->p_fdArray->fda_lock);
     lock_acquire(proc_dst->p_fdArray->fda_lock);
 
+    //iterate over proc_src's filedescriptor array's entry and add each one into proc_dst's filedescriptor array
     for (unsigned int i = 0; i < array_num(proc_src->p_fdArray->fdArray); i++)
     {
         struct fd_entry *fe_old = (struct fd_entry *)array_get(proc_src->p_fdArray->fdArray, i);
@@ -152,11 +158,15 @@ void ft_copy(struct proc *proc_src, struct proc *proc_dst)
         KASSERT(fe_new != NULL);
 
         lock_acquire(fe_old->file->file_lock);
+
         KASSERT(fe_old->file->valid && fe_old->file->refcount > 0);
+
         fe_old->file->refcount++;
         VOP_INCREF(fe_old->file->vn);
+
         fe_new->fd = fe_old->fd;
         fe_new->file = fe_old->file;
+
         lock_release(fe_old->file->file_lock);
 
         array_add(proc_dst->p_fdArray->fdArray, fe_new, NULL);

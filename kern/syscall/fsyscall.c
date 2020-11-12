@@ -20,6 +20,7 @@
 #include <machine/trapframe.h>
 #include <addrspace.h>
 #include <kern/wait.h>
+#include <kern/limits.h>
 
 /*
  * opens the file, device, or other kernel object named by the pathname filename. 
@@ -537,13 +538,11 @@ int sys___getcwd(char *buf, size_t buflen, int *retVal)
 }
 
 /**
- * Copys the currently running process.
- * The two copies are identical except the child process has a new, unique process id.
- * The two processes do not share memory or open file tables. However, the file handle objects the file 
- * tables point to are shared.
- * On success, fork returns twice, once in the parent process and once in the child process.
- * In the child process, 0 is returned. In the parent process, the new child process's pid is returned.
- * On error, no new process is created. fork only returns once with corresponding error code.
+ * Fork the current process to to create a child process so that the two copies are almost identical except the PID.
+ * On success, sys_fork returns twice, once in the parent process and once in the child process.
+ * In the child process, 0 is returned.
+ * In the parent process, the new child process's pid is returned.
+ * On error, no new process is created. sys_fork only returns once with corresponding error code.
  */
 int sys_fork(struct trapframe *tf, int *retval)
 {
@@ -554,14 +553,14 @@ int sys_fork(struct trapframe *tf, int *retval)
     const char *new_proc_name = curproc->p_name;
     const char *new_thread_name = curthread->t_name;
 
-    //create a child process
+    //create a new process
     new_proc = create_fork_proc(new_proc_name);
     if (new_proc == NULL)
     {
         return ENOMEM;
     }
 
-    // add the new process to the pid table and save the child process's pid in new_proc->pid
+    // add the new process to the pidtable and save its PID into new_proc->pid
     int ret = pidtable_add(new_proc, &(new_proc->pid));
     if (ret)
     {
@@ -569,13 +568,14 @@ int sys_fork(struct trapframe *tf, int *retval)
         return ret;
     }
 
-    // copy address space from the parent process
+    // copy the parent process's address space into the new process
     parent_as = proc_getas();
     ret = as_copy(parent_as, &child_as);
     new_proc->p_addrspace = child_as;
     if (ret)
-    { // if copy is not successful, free new process
-        pidtable_remove(new_proc->pid);
+    { // if addrspace's copy is not successful, free the new process
+        if (new_proc->pid >= PID_MIN && new_proc->pid <= PID_MAX)
+            pidtable_remove(new_proc->pid);
         proc_destroy(new_proc);
         return ret;
     }
@@ -592,7 +592,7 @@ int sys_fork(struct trapframe *tf, int *retval)
     // copy filetable from the parent process
     ft_copy(curproc, new_proc);
 
-    // copy trapframe from the parent
+    // copy the trapframe from the parent
     struct trapframe *tf_dup = (struct trapframe *)kmalloc(sizeof(struct trapframe));
     if (tf_dup == NULL)
     {
@@ -600,9 +600,10 @@ int sys_fork(struct trapframe *tf, int *retval)
     }
     memcpy((void *)tf_dup, (const void *)tf, sizeof(struct trapframe));
 
-    //return child process's pid to parent
+    //return child process's PID as the parent process's retVal
     *retval = new_proc->pid;
 
+    //set up the arguments for new process's entry function:enter_forked_process()
     void **argv;
     argv = kmalloc(2 * sizeof(void *));
     argv[0] = tf_dup;
@@ -613,13 +614,18 @@ int sys_fork(struct trapframe *tf, int *retval)
     if (ret)
     {
         proc_destroy(new_proc);
-        pidtable_remove(new_proc->pid);
+        if (new_proc->pid >= PID_MIN && new_proc->pid <= PID_MAX)
+            pidtable_remove(new_proc->pid);
         kfree(tf_dup);
         return ret;
     }
     return 0;
 }
 
+/**
+ * Copy a string with intended length copy_len from user's addrspace into a kernel address
+ * Return the actual copied length into *actural_len
+ */
 static int
 string_in(const char *user_src, char **kern_dest, size_t copy_len, size_t *actural_len)
 {
@@ -639,8 +645,10 @@ string_in(const char *user_src, char **kern_dest, size_t copy_len, size_t *actur
 }
 
 /**
- * Helper function for sys_execv()
- * Return the number of arguments in argc
+ * Helper function for sys_execv().
+ * Return the number of arguments in argc.
+ * On success,return 0.
+ * On error, the corresponding error code is returned.
  */
 static int get_argc(char **args, int *argc)
 {
@@ -648,10 +656,11 @@ static int get_argc(char **args, int *argc)
     int i = 0;
     char *next_arg;
 
-    //count the argument number one by one until we meet the null terminator, also check if there are too many arguments
+    //count the number of arguments one by one until we hit the null terminator,
+    // also check if there are too many arguments
     do
     {
-        i++; // i starts from 1
+        i++;
         ret = copyin((const_userptr_t)&args[i], (void *)&next_arg, (size_t)sizeof(char *));
         if (ret)
         {
@@ -697,19 +706,27 @@ get_strLen(const char *string, int max_len, size_t *actual_length)
     *actual_length = i;
     return 0;
 }
+
 /**
-*Copies the user strings into the kernel, populating size[] with their respective lengths.
-*Returns an error if an argument's length exceeds ARG_MAX.
-*/
+ * Copy the arguments and each argument string's length into args_copy and size_arr.
+ * Return the total argument string's length in strSize_total.
+ * On success,return 0.
+ * On error, the corresponding error code is returned.
+ */
 static int
-copy_in_args(int argc, char **args, char **args_copy, int *size_arr, int *strSize_total) //TODO:this implementation might not pass bigexecv test
+copy_in_args(int argc, char **args, char **args_copy, int *size_arr, int *strSize_total)
 {
     int err;
     size_t str_len, aligned_strlen, actual_len;
-    int arg_size_left = ARG_MAX;
     *strSize_total = 0;
+
+    //check if arguments' size exceeds ARG_MAX
+    int arg_size_left = ARG_MAX;
+
+    //copy one argument string at a time
     for (int i = 0; i < argc; i++)
     {
+        //get the argument string stored in args[i]'s length in str_len
         err = get_strLen((const char *)args[i], arg_size_left - 1, &str_len);
         if (err)
         {
@@ -719,6 +736,9 @@ copy_in_args(int argc, char **args, char **args_copy, int *size_arr, int *strSiz
             }
             return err;
         }
+
+        //copy the argument string pointed by args[i] into address args_copy[i]
+        //record the actual copied length in actual_len
         err = string_in((const char *)args[i], &args_copy[i], str_len, &actual_len);
 
         //align the string pointer to 4 if not already
@@ -730,6 +750,7 @@ copy_in_args(int argc, char **args, char **args_copy, int *size_arr, int *strSiz
         {
             aligned_strlen = actual_len;
         }
+
         arg_size_left -= aligned_strlen;
         size_arr[i] = aligned_strlen;
         *strSize_total += aligned_strlen;
@@ -737,6 +758,10 @@ copy_in_args(int argc, char **args, char **args_copy, int *size_arr, int *strSiz
     return 0;
 }
 
+/**
+ * Helper function for sys_execv()
+ * Clear args_copy and size used for copy arguments from kernel memory
+ */
 static void free_copied_args(int argc, int *size, char **args_copy)
 {
     for (int i = 0; i < argc; i++)
@@ -746,6 +771,14 @@ static void free_copied_args(int argc, int *size, char **args_copy)
     kfree(size);
     kfree(args_copy);
 }
+
+/**
+ * Copy out the argument strings and the null-terminated argv array from the kernel address args_copy 
+ * to the stack 
+ * Return the updated stack pointer's position to stackptr and the argv array's address to argv
+ * On success,return 0.
+ * On error, the corresponding error code is returned.
+ */
 static int copy_out_args(int argc, char **args_copy, int *size, int strSize_total, vaddr_t *stackptr, userptr_t *argv)
 {
     size_t actual_len;
@@ -753,6 +786,7 @@ static int copy_out_args(int argc, char **args_copy, int *size, int strSize_tota
     userptr_t argv_base_addr = (userptr_t)(*stackptr - (argc + 1) * sizeof(userptr_t *) - strSize_total * sizeof(char));
     userptr_t str_base_addr = (userptr_t)(*stackptr - strSize_total * sizeof(char));
 
+    //update the stack pointer's position to the base address of argv array, and record the address to argv as well
     *stackptr = (vaddr_t)argv_base_addr;
     *argv = argv_base_addr;
 
@@ -760,14 +794,13 @@ static int copy_out_args(int argc, char **args_copy, int *size, int strSize_tota
     userptr_t str_temp_ptr = str_base_addr;
     for (int i = 0; i < argc; i++)
     {
-
         //copy out argument string to the new stack
         err = copyoutstr(args_copy[i], str_temp_ptr, size[i], &actual_len);
         if (err)
         {
             return err;
         }
-        //copy out argument's pointer to the new stack
+        //copy out argument string's pointer to the new stack
         err = copyout(&str_temp_ptr, argv_temp_ptr, sizeof(char *));
         if (err)
         {
@@ -781,13 +814,7 @@ static int copy_out_args(int argc, char **args_copy, int *size, int strSize_tota
 }
 
 /**
- * Replaces the currently executing program with a newly loaded program image.
- * The pathname of the program to run is passed as program. The args argument is an array of 0-terminated strings.
- * The array itself should be terminated by a NULL pointer.The argument strings should be copied into the new 
- * process as the new process's argv[] array. In the new process, argv[argc] must be NULL. 
- * By convention, argv[0] in new processes contains the name that was used to invoke the program. 
- * This is not necessarily the same as program, and furthermore is only a convention and should not be enforced by the kernel. 
- * The process file table and current working directory are not modified by execv.
+ * Execute a process with pathname program with arguments in args array.
  * On success, execv does not return; instead, the new program begins executing.
  * On failure, the corresponding error code is returned.
  */
@@ -796,10 +823,11 @@ int sys_execv(const char *program, char **args)
     int ret;
     int strSize_total;
     char *progname;
+    // check for invalid pointers
     if (program == NULL || args == NULL)
-        return EFAULT; // indicates that one of the argument is an invalid pointer
+        return EFAULT;
 
-    //copy the arguments from the old address space
+    //copy the process's pathname into kernel
     size_t *path_len = kmalloc(sizeof(size_t));
     ret = string_in(program, &progname, PATH_MAX, path_len);
     if (ret)
@@ -818,18 +846,24 @@ int sys_execv(const char *program, char **args)
         return ret;
     }
 
+    //allocate a kernel buffer for copy arguments array args into kernel
     char **args_copy = kmalloc(argc * sizeof(char *));
     if (args_copy == NULL)
     {
         kfree(progname);
         return ENOMEM;
     }
+
+    //allocate an array to store each argument string's length in each array entry
     int *size_arr = kmalloc(argc * sizeof(int));
     if (size_arr == NULL)
     {
         kfree(progname);
         return ENOMEM;
     }
+
+    //copy the arguments and each argument string's length into pre-allocated kernel buffer args_copy and size_arr
+    //record the total argument string's length in strSize_total
     ret = copy_in_args(argc, args, args_copy, size_arr, &strSize_total);
     if (ret)
     {
@@ -846,9 +880,10 @@ int sys_execv(const char *program, char **args)
     {
         kfree(progname);
         free_copied_args(argc, size_arr, args_copy);
-        return ENOMEM; // insufficient virtual memory is available
+        return ENOMEM;
     }
 
+    //open the file with pathname progname
     struct vnode *vn;
     vaddr_t entrypoint, stackptr;
     ret = vfs_open(progname, O_RDONLY, 0, &vn);
@@ -864,11 +899,12 @@ int sys_execv(const char *program, char **args)
     proc_setas(as_new);
     as_activate();
 
-    //load a new executable
+    //Load the executable user program into the new address space
+    //record the program's initial Program counter in entrypoint
     ret = load_elf(vn, &entrypoint);
     if (ret)
     {
-        //if err, switch back to old address space
+        //if there's an error, switch back to old address space
         proc_setas(as_old);
         as_activate();
         as_destroy(as_new);
@@ -879,7 +915,9 @@ int sys_execv(const char *program, char **args)
         return ret;
     }
     vfs_close(vn);
+
     //define a new stack region
+    //record the stack pointer in stackptr
     ret = as_define_stack(as_new, &stackptr);
     if (ret)
     {
@@ -895,7 +933,8 @@ int sys_execv(const char *program, char **args)
         return ret;
     }
 
-    //copy the arguments to the new address space, properly arranging them
+    //copy the arguments to the new address space and properly arranging them on the stack
+    //update the stack pointer in stackptr and record the argv array's base address in argv
     userptr_t argv;
     ret = copy_out_args(argc, args_copy, size_arr, strSize_total, &stackptr, &argv);
     if (ret)
@@ -912,11 +951,13 @@ int sys_execv(const char *program, char **args)
         return ret;
     }
 
+    //free allocated kernel memory for copy arguments
     kfree(progname);
     free_copied_args(argc, size_arr, args_copy);
 
-    //clean up the old address space and
+    //clean up the old address space
     as_destroy(as_old);
+
     //wrap to user mode
     enter_new_process(argc, argv, NULL, stackptr, entrypoint);
 
@@ -930,6 +971,7 @@ int sys_execv(const char *program, char **args)
  */
 int sys_getpid(int *retval)
 {
+    // avoid race condition
     lock_acquire(curproc->pid_lock);
     *retval = curproc->pid;
     lock_release(curproc->pid_lock);
@@ -938,33 +980,31 @@ int sys_getpid(int *retval)
 /**
  * Cause the current process to exit. 
  * The exit code exit_code is reported back to other process(es) via the waitpid() call.
- * The process id of the exiting process should not be reused until the process's parent has 
- * collect its exit status.
  * sys__exit does not return.
  */
-
 void sys__exit(int exit_code)
 {
     lock_acquire(curproc->pid_lock);
-    //check the state of each child program of proc
-    //if the child has already exited,clear its pid information
-    //if not, update its state to ORPHAN to indicate its parent has exited
+
+    // check the state of each child program of proc
+    // if the child has already exited, clear its pid information
+    // if not, update its state to ORPHAN to indicate its parent has exited
     updateChildState(curproc);
 
     pid_t pid = curproc->pid;
-
-    //if parent has already exited, clear the current process's pid information
-    if (curproc->proc_state == ORPHAN)
+    unsigned int state = curproc->proc_state;
+    //if parent has already exited, clear the current process
+    if (state == ORPHAN)
     {
+        lock_release(curproc->pid_lock);
+        proc_destroy(curproc);
+
         lock_acquire(pidtable->pt_lock);
         reset_pidtable_entry(pid);
         lock_release(pidtable->pt_lock);
-
-        lock_release(curproc->pid_lock);
-        proc_destroy(curproc);
     }
     // if parent is still running, update proc's state to ZOMBIE and record its exit code
-    else if (curproc->proc_state == RUNNING)
+    else if (state == RUNNING)
     {
         curproc->proc_state = ZOMBIE;
         curproc->exit_code = _MKWAIT_EXIT(exit_code);
@@ -981,6 +1021,7 @@ void sys__exit(int exit_code)
         panic("Tried to exit a bad process.\n");
     }
 
+    // exit the thread
     thread_exit();
     panic("program should not reach here");
 }
@@ -999,7 +1040,7 @@ void kExit(int exit_code)
 
     pid_t pid = curproc->pid;
 
-    //if parent has already exited, clear the current process's pid information
+    //if parent has already exited, clear the current process
     if (curproc->proc_state == ORPHAN)
     {
         lock_acquire(pidtable->pt_lock);
@@ -1025,25 +1066,17 @@ void kExit(int exit_code)
         panic("Tried to exit a bad process.\n");
     }
 
+    // exit the thread
     thread_exit();
     panic("program should not reach here");
 }
 
 /**
- * Wait for the process specified by pid to exit, and return an encoded exit status in the integer pointed 
- * to by status. If that process has exited already, waitpid returns immediately. 
- * If that process does not exist, waitpid fails.
- * It is explicitly allowed for status to be NULL, in which case waitpid operates normally but the status value
- * is not produced.
- * A process moves from "has exited already" to "does not exist" when every process that is expected to collect
- * its exit status with waitpid has done so.
- * If a parent process exits before one or more of its children, it can no longer be expected collect their exit status. 
- * not required to implement options in OS161.However, the system should 
- * check to make sure that requests for options the system do not support are rejected.
- * On success, returns the process id whose exit status is reported in status. 
+ * Wait for the process specified by pid to exit.
+ * Returns the process id in retval and report the exit code of the procss specified by pid in status or not if status is NULL 
+ * On success, return 0.
  * On failure, the corresponding error code is returned.
  */
-
 int sys_waitpid(pid_t pid, int *status, int options, int *retval)
 {
     int ret;
@@ -1067,18 +1100,20 @@ int sys_waitpid(pid_t pid, int *status, int options, int *retval)
     kbuf = kmalloc(sizeof(*kbuf));
     if (kbuf == NULL)
     {
-        return ENOMEM;
+        return ENOMEM; // out of memory error is returned if can't allocate space to kbuf
     }
 
     // check if the process specified by pid is a child process of curproc
 
-    // bool var indicates if pid is a child of current process
+    // bool var flag indicates if pid is a child of current process
     int flag = 0;
     lock_acquire(pidtable->pt_lock);
     struct proc *proc_of_pid = pidtable->pid_procs[pid];
     lock_release(pidtable->pt_lock);
 
     int num_of_children = array_num(curproc->children);
+    // iterate over curproc's children array and see if process with pid passed in matches with
+    //any one of curproc's child process
     for (int i = 0; i < num_of_children; ++i)
     {
         struct proc *child = array_get(curproc->children, i);
@@ -1087,6 +1122,7 @@ int sys_waitpid(pid_t pid, int *status, int options, int *retval)
             flag = 1;
         }
     }
+
     //return if the process specified by pid is NOT a child process of curproc
     if (flag == 0)
     {
@@ -1096,28 +1132,32 @@ int sys_waitpid(pid_t pid, int *status, int options, int *retval)
 
     lock_acquire(proc_of_pid->pid_lock);
 
-    // wait until the child process to exit and store the child process's exitcode in status
+    // wait until the child process to exit and store the child process's exitcode in kbuf
     while (proc_of_pid->proc_state != ZOMBIE)
     {
         cv_wait(proc_of_pid->pid_cv, proc_of_pid->pid_lock);
     }
     *kbuf = proc_of_pid->exit_code;
 
+    // a NULL value of status indicates no status value is produced and everything else proceeds normally
     if (status != NULL)
     {
-        //check if status pointer is properly aligned to 4
+        //check if status pointer is properly aligned to 4, accounting for misalignment test in badcall
         if (!((int)status % 4 == 0))
         {
             lock_release(proc_of_pid->pid_lock);
             kfree(kbuf);
-            return EFAULT;
+            return EFAULT; // The status argument was an invalid pointer.
         }
+
+        // collect exit code of the child process, copy out from kbuf which points to
+        //proc_of_pid->exit_code to user pointer's status
         ret = copyout(kbuf, (userptr_t)status, sizeof(int));
         if (ret)
         {
             lock_release(proc_of_pid->pid_lock);
             kfree(kbuf);
-            return EFAULT;
+            return EFAULT; // The status argument was an invalid pointer.
         }
     }
 

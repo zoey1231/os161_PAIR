@@ -33,7 +33,7 @@ struct filetable
 };
 
 //filetable is accessible for all processes
-extern struct filetable *filetable;
+extern struct filetable filetable;
 
 /**
  * structure to keep track of opened files and thier associated fd
@@ -54,12 +54,15 @@ struct fileDescriptorArray
     struct lock *fda_lock;
 };
 
-struct fileDescriptorArray *fdArray_create(void);
-struct filetable *filetable_create(void);
+// struct fileDescriptorArray *fdArray_create(void);
+int fdArray_create(struct proc *proc);
+//struct filetable *filetable_create(void);
+int filetable_create(struct filetable *ft);
 void filetable_destory(struct filetable *ft);
-void fdArray_destory(struct fileDescriptorArray *fd_arr);
+void fdArray_destory(struct array *fd_arr);
 int filetable_add(struct filetable *ft, struct file *f);
 struct fd_entry *fd_get(struct array *arr, unsigned fd, int *index);
-void filetable_remove(struct filetable *ft, unsigned fd);
+struct file *filetable_get(struct array *ft, struct array *fd_array, unsigned fd, int *index);
+void filetable_remove(struct filetable *ft, struct array *fd_array, unsigned fd);
 void ft_copy(struct proc *proc_src, struct proc *proc_dst);
 #endif

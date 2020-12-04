@@ -36,7 +36,8 @@
 
 #include <vm.h>
 #include "opt-dumbvm.h"
-
+#include <vnode.h>
+#include <synch.h>
 struct vnode;
 
 /*
@@ -45,6 +46,23 @@ struct vnode;
  *
  * You write this.
  */
+#define PDIRMASK 0xff000000
+#define PTEMASK 0x00fff000
+#define STACK_PAGES 18
+
+#define EXTRACT_DIR_INDEX(vaddr) ((vaddr & PDIRMASK) >> 24)
+#define EXTRACT_PTE_INDEX(vaddr) ((vaddr & PTEMASK) >> 12)
+
+struct pte
+{
+        vaddr_t vpagenum; // align to page size
+        paddr_t ppagenum; // align to page size
+
+        int8_t allocated;       // if it has already allocated, then check the present
+        int8_t present;         // 1 on meml; 0 on disk
+        int flag;               // read, write, execute, in elf.h, or together
+        off_t swap_disk_offset; //offset when present at the disk
+};
 
 struct addrspace
 {
@@ -58,6 +76,24 @@ struct addrspace
         paddr_t as_stackpbase;
 #else
         /* Put stuff here for your VM system */
+        vaddr_t vbase1;
+        vaddr_t vtop1;
+        struct pte *region1;
+
+        vaddr_t vbase2;
+        vaddr_t vtop2;
+        struct pte *region2;
+
+        vaddr_t stacktop;
+        vaddr_t stackbase;
+        struct pte *stackregion;
+
+        //add heap support
+        vaddr_t heaptop;
+        vaddr_t heapbase;
+        struct pte *heapregion;
+
+        struct lock *as_lock;
 #endif
 };
 
@@ -116,7 +152,7 @@ int as_define_region(struct addrspace *as,
 int as_prepare_load(struct addrspace *as);
 int as_complete_load(struct addrspace *as);
 int as_define_stack(struct addrspace *as, vaddr_t *initstackptr);
-
+int as_define_heap(struct addrspace *as, vaddr_t *initheapptr);
 /*
  * Functions in loadelf.c
  *    load_elf - load an ELF user program executable into the current

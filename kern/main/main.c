@@ -53,8 +53,8 @@
 #include <filetable.h>
 #include <proc.h>
 
-struct filetable *filetable;
-
+struct filetable filetable;
+struct pidtable pidtable;
 /*
  * These two pieces of data are maintained by the makefiles and build system.
  * buildconfig is the name of the config file the kernel was configured with.
@@ -128,7 +128,6 @@ boot(void)
 	vm_bootstrap();
 	kprintf_bootstrap();
 	thread_start_cpus();
-	pidtable_init();
 
 	/* Default bootfs - but ignore failure, in case emu0 doesn't exist */
 	vfs_setbootfs("emu0");
@@ -210,7 +209,10 @@ int sys_reboot(int code)
 void kmain(char *arguments)
 {
 	boot();
-	filetable = filetable_create();
+	filetable_create(&filetable);
+	pidtable_init(&pidtable);
+
+	//filetable = filetable_create();
 	menu(arguments);
 
 	/* Should not get here */

@@ -61,7 +61,6 @@
  * The process for the kernel; this holds all the kernel-only threads.
  */
 struct proc *kproc;
-struct pidtable *pidtable;
 
 /**
  * Helper function for pidtable_init() and pidtable_add(). 
@@ -109,10 +108,20 @@ static void pidInfo_destory(struct proc *proc)
 void reset_pidtable_entry(pid_t pid)
 {
 	KASSERT(pid >= PID_MIN && pid <= PID_MAX);
-	pidtable->pid_procs[pid] = NULL;
-	pidtable->pid_available++;
-	pidtable->occupied[pid] = FREE;
+	if (bitmap_isset(pidtable.occupied, pid))
+	{
+		bitmap_unmark(pidtable.occupied, pid);
+	}
+	array_set(pidtable.pid_procs, pid, NULL);
+	pidtable.pid_available++;
 }
+// void reset_pidtable_entry(pid_t pid)
+// {
+// 	KASSERT(pid >= PID_MIN && pid <= PID_MAX);
+// 	pidtable.pid_procs[pid] = NULL;
+// 	pidtable.pid_available++;
+// 	pidtable.occupied[pid] = FREE;
+// }
 
 /*
  * Create a proc structure.
@@ -133,22 +142,15 @@ static struct proc *proc_create(const char *name)
 		kfree(proc);
 		return NULL;
 	}
-	proc->p_fdArray = fdArray_create();
-	if (proc->p_fdArray == NULL)
-	{
-		kfree(proc->p_name);
-		kfree(proc);
-		return NULL;
-	}
 
-	ret = pidInfo_init(proc);
-	if (ret)
-	{
-		fdArray_destory(proc->p_fdArray);
-		kfree(proc->p_name);
-		kfree(proc);
-		return NULL;
-	}
+	//proc->p_fdArray = fdArray_create();
+	// if (proc->p_fdArray == NULL)
+	// {
+	// 	kfree(proc->p_name);
+	// 	kfree(proc);
+	// 	return NULL;
+	// }
+
 	threadarray_init(&proc->p_threads);
 	spinlock_init(&proc->p_lock);
 
@@ -158,6 +160,22 @@ static struct proc *proc_create(const char *name)
 	/* VFS fields */
 	proc->p_cwd = NULL;
 
+	//initialize the process's fileDescriptor array
+
+	ret = fdArray_create(proc);
+	if (ret)
+	{
+		kfree(proc->p_name);
+		kfree(proc);
+		return NULL;
+	}
+	ret = pidInfo_init(proc);
+	if (ret)
+	{
+		kfree(proc->p_name);
+		kfree(proc);
+		return NULL;
+	}
 	return proc;
 }
 
@@ -249,9 +267,11 @@ void proc_destroy(struct proc *proc)
 		pidInfo_destory(proc);
 
 	/* filetable fields */
-	if (proc->p_fdArray != NULL)
+	if (proc->fdArray != NULL)
 	{
-		fdArray_destory(proc->p_fdArray);
+		fdArray_destory(proc->fdArray);
+
+		lock_destroy(proc->fda_lock);
 	}
 
 	threadarray_cleanup(&proc->p_threads);
@@ -320,7 +340,9 @@ proc_create_runprogram(const char *name)
 	ret = pidtable_add(newproc, &newproc->pid);
 	if (ret)
 	{
-		fdArray_destory(newproc->p_fdArray);
+		fdArray_destory(newproc->fdArray);
+
+		lock_destroy(newproc->fda_lock);
 		kfree(newproc);
 		return NULL;
 	}
@@ -462,7 +484,9 @@ int proc_filetable_init(struct proc *proc)
 	ret = vfs_open(cons, O_RDONLY, 0, &stdin_vn);
 	if (ret)
 	{
-		fdArray_destory(proc->p_fdArray);
+		fdArray_destory(proc->fdArray);
+
+		lock_destroy(proc->fda_lock);
 		return ret;
 	}
 
@@ -477,14 +501,16 @@ int proc_filetable_init(struct proc *proc)
 	fe = kmalloc(sizeof(struct fd_entry));
 	fe->fd = 0;
 	fe->file = f;
-	filetable_add(filetable, f);
-	array_add(proc->p_fdArray->fdArray, fe, NULL);
+	filetable_add(&filetable, f);
+	array_add(proc->fdArray, fe, NULL);
 
 	cons = kstrdup("con:");
 	ret = vfs_open(cons, O_WRONLY, 0, &stdout_vn);
 	if (ret)
 	{
-		fdArray_destory(proc->p_fdArray);
+		fdArray_destory(proc->fdArray);
+
+		lock_destroy(proc->fda_lock);
 		return ret;
 	}
 	f = kmalloc(sizeof(struct file));
@@ -498,14 +524,16 @@ int proc_filetable_init(struct proc *proc)
 	fe = kmalloc(sizeof(struct fd_entry));
 	fe->fd = 1;
 	fe->file = f;
-	filetable_add(filetable, f);
-	array_add(proc->p_fdArray->fdArray, fe, NULL);
+	filetable_add(&filetable, f);
+	array_add(proc->fdArray, fe, NULL);
 
 	cons = kstrdup("con:");
 	ret = vfs_open(cons, O_WRONLY, 0, &stderr_vn);
 	if (ret)
 	{
-		fdArray_destory(proc->p_fdArray);
+		fdArray_destory(proc->fdArray);
+
+		lock_destroy(proc->fda_lock);
 		return ret;
 	}
 	f = kmalloc(sizeof(struct file));
@@ -519,8 +547,8 @@ int proc_filetable_init(struct proc *proc)
 	fe = kmalloc(sizeof(struct fd_entry));
 	fe->fd = 2;
 	fe->file = f;
-	filetable_add(filetable, f);
-	array_add(proc->p_fdArray->fdArray, fe, NULL);
+	filetable_add(&filetable, f);
+	array_add(proc->fdArray, fe, NULL);
 
 	return 0;
 }
@@ -528,16 +556,9 @@ int proc_filetable_init(struct proc *proc)
 /**
  * initialize the pidtable, usd in kmain()
  */
-void pidtable_init()
+void pidtable_init(struct pidtable *pidtable)
 {
 	int ret;
-	// allocate space for pidtable
-	pidtable = kmalloc(sizeof(struct pidtable));
-	if (pidtable == NULL)
-	{
-		panic("Unable to initialize pidtable");
-	}
-
 	// allocate space for pt_lock
 	pidtable->pt_lock = lock_create("pt_lock");
 
@@ -553,15 +574,58 @@ void pidtable_init()
 	{
 		panic("Unable to initialize pidtable");
 	}
-	pidtable->pid_procs[pidtable->pid_next] = kproc;
+	pidtable->pid_procs = array_create();
+	array_init(pidtable->pid_procs);
+	array_setsize(pidtable->pid_procs, PID_MAX + 1);
+
+	array_set(pidtable->pid_procs, pidtable->pid_next, kproc);
+
 	pidtable->pid_available--;
 
+	pidtable->occupied = bitmap_create(PID_MAX + 1);
+	//mark the slots before PID_MIN as occupied
+	for (unsigned index = 0; index < PID_MIN; ++index)
+		bitmap_mark(pidtable->occupied, index);
 	/* Initalize other spaces in the filetable  */
 	for (int i = PID_MIN + 1; i < PID_MAX; i++)
 	{
 		reset_pidtable_entry(i);
 	}
 }
+// void pidtable_init(struct pidtable *pidtable)
+// {
+// 	int ret;
+// 	// allocate space for pidtable
+// 	pidtable = kmalloc(sizeof(struct pidtable));
+// 	if (pidtable == NULL)
+// 	{
+// 		panic("Unable to initialize pidtable");
+// 	}
+
+// 	// allocate space for pt_lock
+// 	pidtable->pt_lock = lock_create("pt_lock");
+
+// 	//set one avaliable spot for kproc to use
+// 	pidtable->pid_available = 1;
+
+// 	// Skip pid=0 since it has special meaning.
+// 	pidtable->pid_next = PID_MIN;
+
+// 	// add the kernel process to the table
+// 	ret = pidInfo_init(kproc);
+// 	if (ret)
+// 	{
+// 		panic("Unable to initialize pidtable");
+// 	}
+// 	pidtable->pid_procs[pidtable->pid_next] = kproc;
+// 	pidtable->pid_available--;
+
+// 	/* Initalize other spaces in the filetable  */
+// 	for (int i = PID_MIN + 1; i < PID_MAX; i++)
+// 	{
+// 		reset_pidtable_entry(i);
+// 	}
+// }
 
 /**
  * Assign a pid to a given process proc and add the process to pidtable
@@ -574,12 +638,12 @@ int pidtable_add(struct proc *proc, int32_t *retval)
 	pid_t next_pid;
 	KASSERT(proc != NULL);
 
-	lock_acquire(pidtable->pt_lock);
+	lock_acquire(pidtable.pt_lock);
 
 	//check pidtable's avilibility
-	if (pidtable->pid_available < 1)
+	if (pidtable.pid_available < 1)
 	{
-		lock_release(pidtable->pt_lock);
+		lock_release(pidtable.pt_lock);
 		return ENPROC;
 	}
 
@@ -587,27 +651,36 @@ int pidtable_add(struct proc *proc, int32_t *retval)
 	array_add(curproc->children, proc, NULL);
 
 	//assign the next avaliable spot in pidtable to proc as its pid and return pid
-	next_pid = pidtable->pid_next;
+	next_pid = pidtable.pid_next;
 	*retval = next_pid;
 
-	pidtable->pid_procs[next_pid] = proc;
-	pidtable->occupied[next_pid] = OCCUPIED;
-	pidtable->pid_available--;
+	//pidtable.pid_procs[next_pid] = proc;
+	//pidtable.occupied[next_pid] = OCCUPIED;
+	array_set(pidtable.pid_procs, next_pid, proc);
+	KASSERT(!bitmap_isset(pidtable.occupied, next_pid));
+	bitmap_mark(pidtable.occupied, next_pid);
+
+	pidtable.pid_available--;
 
 	// iterate through avaliable spots to set pid_next to the smallest avaliable number in pidtable
-	if (pidtable->pid_available > 0)
+	if (pidtable.pid_available > 0)
 	{
 		for (int i = next_pid; i < PID_MAX; ++i)
 		{
-			if (pidtable->occupied[i] == FREE)
+			if (!bitmap_isset(pidtable.occupied, i))
 			{
-				pidtable->pid_next = i;
+				pidtable.pid_next = i;
 				break;
 			}
+			// if (pidtable.occupied[i] == FREE)
+			// {
+			// 	pidtable.pid_next = i;
+			// 	break;
+			// }
 		}
 	}
 
-	lock_release(pidtable->pt_lock);
+	lock_release(pidtable.pt_lock);
 	return 0;
 }
 /**
@@ -616,9 +689,9 @@ int pidtable_add(struct proc *proc, int32_t *retval)
 void pidtable_remove(pid_t pid)
 {
 	KASSERT(pid >= PID_MIN && pid <= PID_MAX);
-	lock_acquire(pidtable->pt_lock);
+	lock_acquire(pidtable.pt_lock);
 	reset_pidtable_entry(pid);
-	lock_release(pidtable->pt_lock);
+	lock_release(pidtable.pt_lock);
 }
 
 /**
@@ -648,17 +721,17 @@ void updateChildState(struct proc *proc)
 		if (child_state == ZOMBIE)
 		{
 			// Update the next avaliable pid
-			lock_acquire(pidtable->pt_lock);
-			if (child_pid < pidtable->pid_next)
+			lock_acquire(pidtable.pt_lock);
+			if (child_pid < pidtable.pid_next)
 			{
-				pidtable->pid_next = child_pid;
+				pidtable.pid_next = child_pid;
 			}
 
 			// update the pidtable accordingly
 			// pid at this location is not occupied anymore
 			// the # of available pids is incremented
 			reset_pidtable_entry(child_pid);
-			lock_release(pidtable->pt_lock);
+			lock_release(pidtable.pt_lock);
 
 			lock_release(childProc->pid_lock);
 			proc_destroy(childProc);

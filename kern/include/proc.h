@@ -73,7 +73,9 @@ struct proc
 
 	/* add more material here as needed */
 	/* filetable */
-	struct fileDescriptorArray *p_fdArray; /* array to keep track of fd of each file in the file table for this process*/
+	//struct fileDescriptorArray *p_fdArray; /* array to keep track of fd of each file in the file table for this process*/
+	struct array *fdArray;
+	struct lock *fda_lock;
 
 	/* PID */
 	pid_t pid;
@@ -91,14 +93,15 @@ struct proc
 struct pidtable
 {
 	struct lock *pt_lock;
-	struct proc *pid_procs[PID_MAX + 1]; /* Array to hold processes */
-	int pid_available;					 /* Number of available pid spaces */
-	int pid_next;						 /* Lowest free PID */
-	unsigned int occupied[PID_MAX + 1];	 /*Array to indicate if an entry(i.e.,a PID) in pidtable is occupied or not*/
+	struct array *pid_procs;
+	struct bitmap *occupied;
+	//struct proc *pid_procs[PID_MAX + 1]; /* Array to hold processes */
+	//unsigned int occupied[PID_MAX + 1];	 /*Array to indicate if an entry(i.e.,a PID) in pidtable is occupied or not*/
+	int pid_available; /* Number of available pid spaces */
+	int pid_next;	   /* Lowest free PID */
 };
-
 //pidtable is accessible for all processes
-extern struct pidtable *pidtable;
+extern struct pidtable pidtable;
 
 /* This is the process structure for the kernel and for kernel-only threads. */
 extern struct proc *kproc;
@@ -133,7 +136,7 @@ int proc_filetable_init(struct proc *proc);
 struct proc *create_fork_proc(const char *name);
 
 /* Initialize the shared pidtable */
-void pidtable_init(void);
+void pidtable_init(struct pidtable *);
 
 /* Add a process to the pidtable and return assigned pid in the 2nd argument */
 int pidtable_add(struct proc *, int32_t *);

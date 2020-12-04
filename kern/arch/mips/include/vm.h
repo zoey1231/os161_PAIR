@@ -30,13 +30,12 @@
 #ifndef _MIPS_VM_H_
 #define _MIPS_VM_H_
 
-
 /*
  * Machine-dependent VM system definitions.
  */
 
-#define PAGE_SIZE  4096         /* size of VM page */
-#define PAGE_FRAME 0xfffff000   /* mask for getting page number from addr */
+#define PAGE_SIZE 4096		  /* size of VM page */
+#define PAGE_FRAME 0xfffff000 /* mask for getting page number from addr */
 
 /*
  * MIPS-I hardwired memory layout:
@@ -48,10 +47,10 @@
  * (mips32 is a little different)
  */
 
-#define MIPS_KUSEG  0x00000000
-#define MIPS_KSEG0  0x80000000
-#define MIPS_KSEG1  0xa0000000
-#define MIPS_KSEG2  0xc0000000
+#define MIPS_KUSEG 0x00000000
+#define MIPS_KSEG0 0x80000000
+#define MIPS_KSEG1 0xa0000000
+#define MIPS_KSEG2 0xc0000000
 
 /*
  * The first 512 megs of physical space can be addressed in both kseg0 and
@@ -65,13 +64,13 @@
  * exception handler code) when converted to a vaddr it's *not* NULL, *is*
  * a valid address, and will make a *huge* mess if you scribble on it.
  */
-#define PADDR_TO_KVADDR(paddr) ((paddr)+MIPS_KSEG0)
-
+#define PADDR_TO_KVADDR(paddr) ((paddr) + MIPS_KSEG0)
+#define KVADDR_TO_PADDR(kvaddr) ((kvaddr)-MIPS_KSEG0)
 /*
  * The top of user space. (Actually, the address immediately above the
  * last valid user address.)
  */
-#define USERSPACETOP  MIPS_KSEG0
+#define USERSPACETOP MIPS_KSEG0
 
 /*
  * The starting value for the stack pointer at user level.  Because
@@ -81,7 +80,7 @@
  * We put the stack at the very top of user virtual memory because it
  * grows downwards.
  */
-#define USERSTACK     USERSPACETOP
+#define USERSTACK USERSPACETOP
 
 /*
  * Interface to the low-level module that looks after the amount of
@@ -116,14 +115,17 @@ paddr_t ram_getfirstfree(void);
  * We'll take up to 16 invalidations before just flushing the whole TLB.
  */
 
-struct tlbshootdown {
+struct tlbshootdown
+{
 	/*
 	 * Change this to what you need for your VM design.
 	 */
-	int ts_placeholder;
+	paddr_t paddr;
+	int as_id;
+	int id_flag;
+	struct semaphore *tlbshootdown_sem;
 };
 
 #define TLBSHOOTDOWN_MAX 16
-
 
 #endif /* _MIPS_VM_H_ */

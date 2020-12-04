@@ -228,6 +228,10 @@ cpu_create(unsigned hardware_number)
 	else
 	{
 		c->c_curthread->t_stack = kmalloc(STACK_SIZE);
+
+		kprintf("cpu number: %d\n", hardware_number);
+		kprintf("t_stack: %x\n", (unsigned)c->c_curthread->t_stack);
+
 		if (c->c_curthread->t_stack == NULL)
 		{
 			panic("cpu_create: couldn't allocate stack");
@@ -307,7 +311,7 @@ void thread_panic(void)
 	 *
 	 * We could wait for them to stop, except that they might not.
 	 */
-	ipi_broadcast(IPI_PANIC);
+	ipi_broadcast(IPI_PANIC, NULL);
 
 	/*
 	 * Drop runnable threads on the floor.
@@ -349,7 +353,7 @@ void thread_shutdown(void)
 	 * We should probably wait for them to stop and shut them off
 	 * on the system board.
 	 */
-	ipi_broadcast(IPI_OFFLINE);
+	ipi_broadcast(IPI_OFFLINE, NULL);
 }
 
 /*
@@ -1167,18 +1171,35 @@ void ipi_send(struct cpu *target, int code)
 	spinlock_release(&target->c_ipi_lock);
 }
 
-void ipi_broadcast(int code)
+unsigned int ipi_broadcast(int code, struct tlbshootdown *mapping)
 {
 	unsigned i;
 	struct cpu *c;
-
-	for (i = 0; i < cpuarray_num(&allcpus); i++)
+	if (code != IPI_TLBSHOOTDOWN)
 	{
-		c = cpuarray_get(&allcpus, i);
-		if (c != curcpu->c_self)
+		for (i = 0; i < cpuarray_num(&allcpus); i++)
 		{
-			ipi_send(c, code);
+			c = cpuarray_get(&allcpus, i);
+			if (c != curcpu->c_self)
+			{
+				ipi_send(c, code);
+			}
 		}
+		return 0;
+	}
+	else
+	{
+		mapping->tlbshootdown_sem = sem_create("tlbshootdown_sem", cpuarray_num(&allcpus) - 1);
+		for (i = 0; i < cpuarray_num(&allcpus); i++)
+		{
+			c = cpuarray_get(&allcpus, i);
+			if (c != curcpu->c_self)
+			{
+				P(mapping->tlbshootdown_sem);
+				ipi_tlbshootdown(c, mapping);
+			}
+		}
+		return cpuarray_num(&allcpus) - 1;
 	}
 }
 

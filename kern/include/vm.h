@@ -36,14 +36,42 @@
  * You'll probably want to add stuff here.
  */
 
-
 #include <machine/vm.h>
+#include <vnode.h>
+#include <bitmap.h>
+#include <synch.h>
+#include <array.h>
+#include <addrspace.h>
+#include <types.h>
+
+struct addrspace;
+
+// struct for frametable entry
+struct frame
+{
+    struct addrspace *as; //if the physcical page is used by the kernel, as=NULL; otherwise, if it's used in a page table entry, as points to the address space containing that page table.
+    uint8_t used;         //used to indicate the physical page is free or not
+    uint8_t kernel;       //1 indicates the physical page is used by the kernel and 0 indicates it's used by the user process
+    vaddr_t vaddr;
+    size_t size;
+};
+
+extern int vm_initialized;
+extern struct frame *coremap;
+extern paddr_t freepage;
+extern struct spinlock *coremap_lock;
+
+extern struct vnode *swap_disk;
+extern struct bitmap *swap_disk_bitmap;
+extern struct lock *swap_disk_lock;
+extern unsigned long total_frame_num;
+
+#define COREMAP_INDEX(PADDR) ((PADDR & PAGE_FRAME) >> 12)
 
 /* Fault-type arguments to vm_fault() */
-#define VM_FAULT_READ        0    /* A read was attempted */
-#define VM_FAULT_WRITE       1    /* A write was attempted */
-#define VM_FAULT_READONLY    2    /* A write to a readonly page was attempted*/
-
+#define VM_FAULT_READ 0     /* A read was attempted */
+#define VM_FAULT_WRITE 1    /* A write was attempted */
+#define VM_FAULT_READONLY 2 /* A write to a readonly page was attempted*/
 
 /* Initialization function */
 void vm_bootstrap(void);
@@ -59,5 +87,9 @@ void free_kpages(vaddr_t addr);
 void vm_tlbshootdown_all(void);
 void vm_tlbshootdown(const struct tlbshootdown *);
 
+//get a physical page for use in vmfault
+paddr_t get_single_ppage(vaddr_t vaddr, struct addrspace *as);
+
+paddr_t swap_page(vaddr_t newvaddr, struct addrspace *newas);
 
 #endif /* _VM_H_ */

@@ -21,6 +21,9 @@
 #include <addrspace.h>
 #include <kern/wait.h>
 #include <kern/limits.h>
+#include <mips/tlb.h>
+#include <elf.h>
+#include <spl.h>
 
 /*
  * opens the file, device, or other kernel object named by the pathname filename. 
@@ -52,16 +55,16 @@ int sys_open(const userptr_t filename, int flags, unsigned int *retVal)
 
     //check if too many files have opened already
 
-    lock_acquire(curproc->p_fdArray->fda_lock);
-    if (array_num(curproc->p_fdArray->fdArray) >= OPEN_MAX)
+    lock_acquire(curproc->fda_lock);
+    if (array_num(curproc->fdArray) >= OPEN_MAX)
     {
-        lock_release(curproc->p_fdArray->fda_lock);
+        lock_release(curproc->fda_lock);
         return EMFILE;
     }
 
     // update fd to the number of files have opened. fd should be associated to
     // the new file after the loop
-    while (fd_get(curproc->p_fdArray->fdArray, fd, NULL) != NULL)
+    while (fd_get(curproc->fdArray, fd, NULL) != NULL)
     {
         fd += 1;
     }
@@ -73,13 +76,13 @@ int sys_open(const userptr_t filename, int flags, unsigned int *retVal)
 
     if (err)
     {
-        lock_release(curproc->p_fdArray->fda_lock);
+        lock_release(curproc->fda_lock);
         return err;
     }
     file = kmalloc(sizeof(struct file));
     if (file == NULL)
     {
-        lock_release(curproc->p_fdArray->fda_lock);
+        lock_release(curproc->fda_lock);
         return ENOMEM;
     }
     file->refcount = 1;
@@ -95,7 +98,7 @@ int sys_open(const userptr_t filename, int flags, unsigned int *retVal)
         stat = kmalloc(sizeof(struct stat));
         if (stat == NULL)
         {
-            lock_release(curproc->p_fdArray->fda_lock);
+            lock_release(curproc->fda_lock);
 
             return ENOMEM;
         }
@@ -107,11 +110,11 @@ int sys_open(const userptr_t filename, int flags, unsigned int *retVal)
         file->offset = 0;
     }
 
-    //add the file's kernel representation to the process's file table
+    //build file entry
     fe = kmalloc(sizeof(struct fd_entry));
     if (fe == NULL)
     {
-        lock_release(curproc->p_fdArray->fda_lock);
+        lock_release(curproc->fda_lock);
 
         return EMFILE;
     }
@@ -119,24 +122,26 @@ int sys_open(const userptr_t filename, int flags, unsigned int *retVal)
     fe->fd = fd;
     fe->file = file;
     *retVal = fd;
-    lock_acquire(filetable->ft_lock);
-    err = filetable_add(filetable, file);
+    lock_acquire(filetable.ft_lock);
+
+    //add the file's kernel representation to the glocal filetable
+    err = filetable_add(&filetable, file);
     if (err)
     {
-        lock_release(curproc->p_fdArray->fda_lock);
-        lock_release(filetable->ft_lock);
+        lock_release(curproc->fda_lock);
+        lock_release(filetable.ft_lock);
         return err;
     }
-    // build file entry and save it to the fd_Array
-    err = array_add(curproc->p_fdArray->fdArray, fe, NULL);
+    //add the file entry to the process's filedescriptor table fd_Array
+    err = array_add(curproc->fdArray, fe, NULL);
     {
-        lock_release(curproc->p_fdArray->fda_lock);
-        lock_release(filetable->ft_lock);
+        lock_release(curproc->fda_lock);
+        lock_release(filetable.ft_lock);
         return err;
     }
 
-    lock_release(curproc->p_fdArray->fda_lock);
-    lock_release(filetable->ft_lock);
+    lock_release(curproc->fda_lock);
+    lock_release(filetable.ft_lock);
     return 0;
 }
 
@@ -150,12 +155,12 @@ int sys_close(int fd)
 {
     struct file *file;
 
-    lock_acquire(curproc->p_fdArray->fda_lock);
+    lock_acquire(curproc->fda_lock);
     int index = -1;
-    struct fd_entry *fe = fd_get(curproc->p_fdArray->fdArray, fd, &index);
+    struct fd_entry *fe = fd_get(curproc->fdArray, fd, &index);
     if (index == -1)
     {
-        lock_release(curproc->p_fdArray->fda_lock);
+        lock_release(curproc->fda_lock);
         return EBADF;
     }
 
@@ -164,7 +169,7 @@ int sys_close(int fd)
 
     //decrement the reference count of the file, if refcount is 0 after the decrement,
     //remove the file completely since there is no one has opened the file
-    //otherwise, simply remove the file with fd from the filetable
+    //otherwise, simply remove the file with fd from the process's filedescriptor table
     KASSERT(file->refcount >= 1);
     file->refcount -= 1;
     if (file->refcount == 0)
@@ -176,20 +181,20 @@ int sys_close(int fd)
         lock_release(file->file_lock);
         lock_destroy(file->file_lock);
         fe->file = NULL;
-        // remove file entry from the kernel representation
-        array_remove(curproc->p_fdArray->fdArray, (unsigned)index);
+        // remove file entry from the process's filedescriptor table
+        array_remove(curproc->fdArray, (unsigned)index);
         kfree(fe);
     }
     else
     {
         fe->file = NULL;
-        // remove file entry from the kernel representation
-        array_remove(curproc->p_fdArray->fdArray, (unsigned)index);
+        // remove file entry from the process's filedescriptor table
+        array_remove(curproc->fdArray, (unsigned)index);
         kfree(fe);
         lock_release(file->file_lock);
     }
 
-    lock_release(curproc->p_fdArray->fda_lock);
+    lock_release(curproc->fda_lock);
     return 0;
 }
 /**
@@ -208,11 +213,11 @@ int sys_read(int fd, userptr_t buf, size_t buflen, int *retVal)
     int err;
 
     int index = -1;
-    lock_acquire(curproc->p_fdArray->fda_lock);
-    struct fd_entry *fe = fd_get(curproc->p_fdArray->fdArray, fd, &index);
+    lock_acquire(curproc->fda_lock);
+    struct fd_entry *fe = fd_get(curproc->fdArray, fd, &index);
     if (index == -1)
     {
-        lock_release(curproc->p_fdArray->fda_lock);
+        lock_release(curproc->fda_lock);
         return EBADF;
     }
 
@@ -222,7 +227,7 @@ int sys_read(int fd, userptr_t buf, size_t buflen, int *retVal)
     if (file->status & O_WRONLY)
     {
         lock_release(file->file_lock);
-        lock_release(curproc->p_fdArray->fda_lock);
+        lock_release(curproc->fda_lock);
         return EBADF;
     }
 
@@ -241,13 +246,13 @@ int sys_read(int fd, userptr_t buf, size_t buflen, int *retVal)
     if (err)
     {
         lock_release(file->file_lock);
-        lock_release(curproc->p_fdArray->fda_lock);
+        lock_release(curproc->fda_lock);
         return err;
     }
 
     file->offset += (off_t)(buflen - uio.uio_resid);
     lock_release(file->file_lock);
-    lock_release(curproc->p_fdArray->fda_lock);
+    lock_release(curproc->fda_lock);
     *retVal = (int)buflen - uio.uio_resid;
 
     return 0;
@@ -266,21 +271,21 @@ int sys_write(int fd, const_userptr_t buf, size_t nbytes, int *retVal)
     int err;
     int index = -1;
 
-    lock_acquire(curproc->p_fdArray->fda_lock);
-    struct fd_entry *fe = fd_get(curproc->p_fdArray->fdArray, fd, &index);
+    lock_acquire(curproc->fda_lock);
+    struct fd_entry *fe = fd_get(curproc->fdArray, fd, &index);
     if (index == -1)
     {
-        lock_release(curproc->p_fdArray->fda_lock);
+        lock_release(curproc->fda_lock);
         return EBADF;
     }
 
     file = fe->file;
     lock_acquire(file->file_lock);
-    //check if fd was opened for writing
+    //check if the file is opened for writing
     if (!(file->status & (O_WRONLY | O_RDWR)))
     {
         lock_release(file->file_lock);
-        lock_release(curproc->p_fdArray->fda_lock);
+        lock_release(curproc->fda_lock);
         return EBADF;
     }
 
@@ -301,13 +306,13 @@ int sys_write(int fd, const_userptr_t buf, size_t nbytes, int *retVal)
     if (err)
     {
         lock_release(file->file_lock);
-        lock_release(curproc->p_fdArray->fda_lock);
+        lock_release(curproc->fda_lock);
         return err;
     }
 
     file->offset += (off_t)(nbytes - uio.uio_resid);
     lock_release(file->file_lock);
-    lock_release(curproc->p_fdArray->fda_lock);
+    lock_release(curproc->fda_lock);
     *retVal = (int)nbytes - uio.uio_resid;
 
     return 0;
@@ -338,15 +343,15 @@ int sys_lseek(int fd, off_t pos, userptr_t whence, int64_t *retVal)
     }
 
     int index = -1;
-    lock_acquire(curproc->p_fdArray->fda_lock);
-    struct fd_entry *fe = fd_get(curproc->p_fdArray->fdArray, fd, &index);
+    lock_acquire(curproc->fda_lock);
+    struct fd_entry *fe = fd_get(curproc->fdArray, fd, &index);
     // return EBAD if can't find the file entry with given fd
     if (index == -1)
     {
-        lock_release(curproc->p_fdArray->fda_lock);
+        lock_release(curproc->fda_lock);
         return EBADF;
     }
-    lock_release(curproc->p_fdArray->fda_lock);
+    lock_release(curproc->fda_lock);
 
     struct file *file = fe->file;
     lock_acquire(file->file_lock);
@@ -405,19 +410,19 @@ int sys_dup2(int oldfd, int newfd, int *retVal)
     if (newfd < 0 || oldfd < 0 || newfd >= OPEN_MAX || oldfd >= OPEN_MAX)
         return EBADF;
 
-    lock_acquire(curproc->p_fdArray->fda_lock);
+    lock_acquire(curproc->fda_lock);
 
-    struct fd_entry *fe = fd_get(curproc->p_fdArray->fdArray, oldfd, NULL);
+    struct fd_entry *fe = fd_get(curproc->fdArray, oldfd, NULL);
 
     /* check if the file that oldfd points to exists and valid */
     if (fe == NULL || fe->file == NULL)
     {
-        lock_release(curproc->p_fdArray->fda_lock);
+        lock_release(curproc->fda_lock);
         return EBADF;
     }
     if (!fe->file->valid)
     {
-        lock_release(curproc->p_fdArray->fda_lock);
+        lock_release(curproc->fda_lock);
         return EBADF;
     }
 
@@ -425,29 +430,29 @@ int sys_dup2(int oldfd, int newfd, int *retVal)
     if (oldfd == newfd)
     {
         *retVal = newfd;
-        lock_release(curproc->p_fdArray->fda_lock);
+        lock_release(curproc->fda_lock);
         return 0;
     }
 
-    struct fd_entry *newfd_fe = fd_get(curproc->p_fdArray->fdArray, newfd, NULL);
+    struct fd_entry *newfd_fe = fd_get(curproc->fdArray, newfd, NULL);
     // check if file that newfd points to exists, kill it if it does
     if (newfd_fe != NULL)
     {
-        lock_release(curproc->p_fdArray->fda_lock);
+        lock_release(curproc->fda_lock);
         sys_close(newfd);
-        lock_acquire(curproc->p_fdArray->fda_lock);
+        lock_acquire(curproc->fda_lock);
     }
 
-    if (array_num(curproc->p_fdArray->fdArray) >= OPEN_MAX)
+    if (array_num(curproc->fdArray) >= OPEN_MAX)
     {
-        lock_release(curproc->p_fdArray->fda_lock);
+        lock_release(curproc->fda_lock);
         return EMFILE;
     }
 
     struct fd_entry *new_fe = kmalloc(sizeof(struct fd_entry));
     if (new_fe == NULL)
     {
-        lock_release(curproc->p_fdArray->fda_lock);
+        lock_release(curproc->fda_lock);
         return EMFILE;
     }
 
@@ -458,9 +463,9 @@ int sys_dup2(int oldfd, int newfd, int *retVal)
     fe->file->refcount++;
     lock_release(fe->file->file_lock);
 
-    array_add(curproc->p_fdArray->fdArray, new_fe, NULL);
+    array_add(curproc->fdArray, new_fe, NULL);
     *retVal = newfd;
-    lock_release(curproc->p_fdArray->fda_lock);
+    lock_release(curproc->fda_lock);
     return 0;
 }
 /**
@@ -546,6 +551,8 @@ int sys___getcwd(char *buf, size_t buflen, int *retVal)
  */
 int sys_fork(struct trapframe *tf, int *retval)
 {
+    //kprintf("enter fork\n");
+    int spl = splhigh();
     struct addrspace *parent_as;
     struct addrspace *child_as;
 
@@ -619,6 +626,7 @@ int sys_fork(struct trapframe *tf, int *retval)
         kfree(tf_dup);
         return ret;
     }
+    splx(spl);
     return 0;
 }
 
@@ -999,9 +1007,9 @@ void sys__exit(int exit_code)
         lock_release(curproc->pid_lock);
         proc_destroy(curproc);
 
-        lock_acquire(pidtable->pt_lock);
+        lock_acquire(pidtable.pt_lock);
         reset_pidtable_entry(pid);
-        lock_release(pidtable->pt_lock);
+        lock_release(pidtable.pt_lock);
     }
     // if parent is still running, update proc's state to ZOMBIE and record its exit code
     else if (state == RUNNING)
@@ -1043,9 +1051,9 @@ void kExit(int exit_code)
     //if parent has already exited, clear the current process
     if (curproc->proc_state == ORPHAN)
     {
-        lock_acquire(pidtable->pt_lock);
+        lock_acquire(pidtable.pt_lock);
         reset_pidtable_entry(pid);
-        lock_release(pidtable->pt_lock);
+        lock_release(pidtable.pt_lock);
 
         lock_release(curproc->pid_lock);
         proc_destroy(curproc);
@@ -1088,13 +1096,14 @@ int sys_waitpid(pid_t pid, int *status, int options, int *retval)
         return EINVAL;
     }
     // No such a process if it's out of bound or its pid is not a valid entry in the pidtable
-    lock_acquire(pidtable->pt_lock);
-    if (pid < PID_MIN || pid > PID_MAX || pidtable->occupied[pid] == FREE)
+    lock_acquire(pidtable.pt_lock);
+    // if (pid < PID_MIN || pid > PID_MAX || pidtable.occupied[pid] == FREE)
+    if (pid < PID_MIN || pid > PID_MAX || !bitmap_isset(pidtable.occupied, pid))
     {
-        lock_release(pidtable->pt_lock);
+        lock_release(pidtable.pt_lock);
         return ESRCH;
     }
-    lock_release(pidtable->pt_lock);
+    lock_release(pidtable.pt_lock);
 
     // allocate a kernel space to temporarily store the child process's exitcode
     kbuf = kmalloc(sizeof(*kbuf));
@@ -1107,9 +1116,10 @@ int sys_waitpid(pid_t pid, int *status, int options, int *retval)
 
     // bool var flag indicates if pid is a child of current process
     int flag = 0;
-    lock_acquire(pidtable->pt_lock);
-    struct proc *proc_of_pid = pidtable->pid_procs[pid];
-    lock_release(pidtable->pt_lock);
+    lock_acquire(pidtable.pt_lock);
+    // struct proc *proc_of_pid = pidtable.pid_procs[pid];
+    struct proc *proc_of_pid = array_get(pidtable.pid_procs, pid);
+    lock_release(pidtable.pt_lock);
 
     int num_of_children = array_num(curproc->children);
     // iterate over curproc's children array and see if process with pid passed in matches with
@@ -1167,6 +1177,113 @@ int sys_waitpid(pid_t pid, int *status, int options, int *retval)
 
     //returns the pid whose exit status is reported in status
     *retval = pid;
+
+    return 0;
+}
+
+int sys_sbrk(intptr_t amount, vaddr_t *retval)
+{
+    //kprintf("sbrk called with %d\n", (int)amount);
+    struct addrspace *addr = curproc->p_addrspace;
+
+    //check if heap is initialized
+    if (addr->heapregion == NULL)
+    {
+        as_define_heap(addr, (vaddr_t *)retval);
+        *retval = (vaddr_t)addr->heaptop;
+        //kprintf("heapbase is now %x\n", (int)retval);
+        KASSERT(retval);
+    }
+    else
+    {
+        *retval = (vaddr_t)addr->heaptop;
+        //kprintf("heapbase is now %x\n", (int)retval);
+        KASSERT(retval);
+    }
+
+    //check if don't need to alloc
+    if (amount == 0)
+    {
+        return 0;
+    }
+
+    //check possible heap overflow
+    if ((addr->heaptop + amount < addr->stackbase) &&
+        (addr->heaptop + amount >= addr->vtop2) &&
+        (addr->heaptop + amount >= addr->vtop1))
+    {
+
+        lock_acquire(addr->as_lock);
+
+        if (amount < 0)
+        {
+            int free_page_num = -amount / PAGE_SIZE;
+            int total_page_index = (addr->heaptop - addr->heapbase) / PAGE_SIZE - 1;
+            int lower_bound = total_page_index - free_page_num;
+
+            for (int i = total_page_index; i > lower_bound; i--)
+            {
+                //clear pte
+                struct pte *pte = addr->heapregion + i;
+                if (pte->allocated == 0)
+                {
+                    continue;
+                }
+
+                if (pte->present == 1)
+                {
+                    spinlock_acquire(coremap_lock);
+                    KASSERT(pte->ppagenum != 0);
+                    struct frame *f = coremap + COREMAP_INDEX(pte->ppagenum);
+                    KASSERT(f->used == 1);
+                    KASSERT(f->as == addr);
+                    KASSERT(f->kernel == 0);
+                    KASSERT(f->vaddr == pte->vpagenum);
+                    KASSERT(f->size == 1);
+
+                    bzero((void *)PADDR_TO_KVADDR(pte->ppagenum), PAGE_SIZE);
+                    f->as = NULL;
+                    f->used = 0;
+                    f->kernel = 0;
+                    f->vaddr = 0;
+                    f->size = 0;
+                    spinlock_release(coremap_lock);
+                }
+                else if (pte->present == 0)
+                {
+                    lock_acquire(swap_disk_lock);
+                    bitmap_unmark(swap_disk_bitmap, pte->swap_disk_offset);
+                    lock_release(swap_disk_lock);
+                }
+
+                //update entry in page table
+                pte->ppagenum = 0;
+                pte->allocated = 0;
+                pte->present = 0;
+                pte->swap_disk_offset = 0;
+            }
+
+            //clear tlb
+            int spl = splhigh();
+            for (int i = 0; i < NUM_TLB; ++i)
+            {
+                tlb_write(TLBHI_INVALID(i), TLBLO_INVALID(), i);
+            }
+            splx(spl);
+        }
+
+        //kprintf("heaptop = %x\n", (int)addr->heaptop);
+        //move heap pointer
+        addr->heaptop = addr->heaptop + amount;
+        //kprintf("heaptop = %x\n", (int)addr->heaptop);
+
+        lock_release(addr->as_lock);
+    }
+    else
+    {
+        kprintf("amount is %x, but heap base %x, heaptop %x\n", (int)amount, (int)(addr->heapbase), (int)(addr->heaptop));
+        return EINVAL;
+    }
 
     return 0;
 }

@@ -30,11 +30,9 @@
 #ifndef _CPU_H_
 #define _CPU_H_
 
-
 #include <spinlock.h>
 #include <threadlist.h>
-#include <machine/vm.h>  /* for TLBSHOOTDOWN_MAX */
-
+#include <machine/vm.h> /* for TLBSHOOTDOWN_MAX */
 
 /*
  * Per-cpu structure
@@ -46,28 +44,29 @@
  * a pointer with a fixed address and a per-cpu mapping in the MMU.
  */
 
-struct cpu {
+struct cpu
+{
 	/*
 	 * Fixed after allocation.
 	 */
-	struct cpu *c_self;		/* Canonical address of this struct */
-	unsigned c_number;		/* This cpu's cpu number */
-	unsigned c_hardware_number;	/* Hardware-defined cpu number */
+	struct cpu *c_self;			/* Canonical address of this struct */
+	unsigned c_number;			/* This cpu's cpu number */
+	unsigned c_hardware_number; /* Hardware-defined cpu number */
 
 	/*
 	 * Accessed only by this cpu.
 	 */
-	struct thread *c_curthread;	/* Current thread on cpu */
-	struct threadlist c_zombies;	/* List of exited threads */
-	unsigned c_hardclocks;		/* Counter of hardclock() calls */
-	unsigned c_spinlocks;		/* Counter of spinlocks held */
+	struct thread *c_curthread;	 /* Current thread on cpu */
+	struct threadlist c_zombies; /* List of exited threads */
+	unsigned c_hardclocks;		 /* Counter of hardclock() calls */
+	unsigned c_spinlocks;		 /* Counter of spinlocks held */
 
 	/*
 	 * Accessed by other cpus.
 	 * Protected by the runqueue lock.
 	 */
-	bool c_isidle;			/* True if this cpu is idle */
-	struct threadlist c_runqueue;	/* Run queue for this cpu */
+	bool c_isidle;				  /* True if this cpu is idle */
+	struct threadlist c_runqueue; /* Run queue for this cpu */
 	struct spinlock c_runqueue_lock;
 
 	/*
@@ -84,13 +83,13 @@ struct cpu {
 	 * reasonably be either an address space and vaddr pair, or a
 	 * paddr, or something else.
 	 */
-	uint32_t c_ipi_pending;		/* One bit for each IPI number */
+	uint32_t c_ipi_pending; /* One bit for each IPI number */
 	struct tlbshootdown c_shootdown[TLBSHOOTDOWN_MAX];
 	int c_numshootdown;
 	struct spinlock c_ipi_lock;
 };
 
-#define TLBSHOOTDOWN_ALL  (-1)
+#define TLBSHOOTDOWN_ALL (-1)
 
 /*
  * Initialization functions.
@@ -159,16 +158,15 @@ void cpu_halt(void);
  */
 
 /* IPI types */
-#define IPI_PANIC		0	/* System has called panic() */
-#define IPI_OFFLINE		1	/* CPU is requested to go offline */
-#define IPI_UNIDLE		2	/* Runnable threads are available */
-#define IPI_TLBSHOOTDOWN	3	/* MMU mapping(s) need invalidation */
+#define IPI_PANIC 0		   /* System has called panic() */
+#define IPI_OFFLINE 1	   /* CPU is requested to go offline */
+#define IPI_UNIDLE 2	   /* Runnable threads are available */
+#define IPI_TLBSHOOTDOWN 3 /* MMU mapping(s) need invalidation */
 
 void ipi_send(struct cpu *target, int code);
-void ipi_broadcast(int code);
+unsigned int ipi_broadcast(int code, struct tlbshootdown *mapping);
 void ipi_tlbshootdown(struct cpu *target, const struct tlbshootdown *mapping);
 
 void interprocessor_interrupt(void);
-
 
 #endif /* _CPU_H_ */

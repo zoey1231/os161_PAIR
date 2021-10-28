@@ -22,7 +22,7 @@ OS/161 is a simplified operating system which includes a standalone kernel and a
 * Learnt about the functions, benefits and costs of virtual memory
 * Understood the hardware and software mechanisms needed to implement virtual memory
 * Implemented full virtual memory support in OS161:
-** Handling of TLB faults
-** Abstractions and data structures for virtual address spaces
-** Page tables (handling large page tables)
-** Paging to disk.
+  * Handling of TLB faults
+  * Abstractions and data structures for virtual address spaces
+  * Page tables (handling large page tables)
+  * Paging to disk.

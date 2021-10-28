@@ -1,5 +1,5 @@
 # os161_PAIR
-Assignments for CPEN331 Operating Systems. Assignments consisted of code reading exercises and writing codes.
+Pair assignments for CPEN331 Operating Systems. Assignments consisted of code reading exercises and writing codes.
 
 ### OS/161
 OS/161 is a simplified operating system which includes a standalone kernel and a simple userland, all written in C. OS/161 OS runs on a machine simulator, System/161.

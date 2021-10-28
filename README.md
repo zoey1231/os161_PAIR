@@ -15,7 +15,7 @@ OS/161 is a simplified operating system which includes a standalone kernel and a
 * Understood how to safely transport the arguments (copy in/out) between the user land and the kernel.
 * Learnt about and use the virtual file system interface.
 ### Assignment 5
-* Implemented fork and exec system calls in OS161. 
+* Implemented some system calls in OS161: fork(), execv(), waitpid(), getpid() and _exit(). These system calls enable the creation of new user processes.
 * Learnt about the process abstraction and Unix and mechanisms of new process creation
 * Learnt about enforcing protection and safety in a multiprocess operating system
 ### Assignment 6
